@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识图谱可视化</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        #graphCanvas { width: 100%; height: calc(100vh - 120px); background: #0a0e27; border-radius: 12px; }
+        .graph-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+        .graph-controls select, .graph-controls button {
+            padding: 6px 14px; border-radius: 6px; border: 1px solid #2a2f4a;
+            background: #1a1f3a; color: #e0e0e0; cursor: pointer; font-size: 13px;
+        }
+        .graph-controls button:hover { background: #2a2f5a; }
+        .graph-legend { display: flex; gap: 16px; margin-left: auto; }
+        .legend-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #aaa; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .graph-info { position: absolute; background: #1a1f3a; border: 1px solid #2a2f4a;
+            border-radius: 8px; padding: 12px; color: #e0e0e0; font-size: 13px;
+            pointer-events: none; z-index: 100; display: none; max-width: 300px; }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header"><i class="fas fa-project-diagram"></i><span>ArkTS 知识图谱</span></div>
+        <ul class="sidebar-menu">
+            <li><a href="/"><i class="fas fa-home"></i> 总览</a></li>
+            <li class="active"><a href="/graph"><i class="fas fa-bezier-curve"></i> 知识图谱</a></li>
+            <li><a href="/query"><i class="fas fa-robot"></i> AI 智能查询</a></li>
+            <li><a href="/classes"><i class="fas fa-cubes"></i> 类浏览器</a></li>
+            <li><a href="/stats"><i class="fas fa-chart-bar"></i> 统计分析</a></li>
+        </ul>
+    </nav>
+    <main class="main-content">
+        <header class="top-bar">
+            <h2><i class="fas fa-bezier-curve"></i> 知识图谱可视化</h2>
+        </header>
+        <section>
+            <div class="graph-controls">
+                <select id="graphType">
+                    <option value="full">完整图谱</option>
+                    <option value="classes">类关系图</option>
+                    <option value="calls">调用关系图</option>
+                    <option value="inherit">继承关系图</option>
+                </select>
+                <button onclick="GraphVisualization.reload()"><i class="fas fa-sync-alt"></i> 刷新</button>
+                <button onclick="GraphVisualization.zoomIn()"><i class="fas fa-search-plus"></i></button>
+                <button onclick="GraphVisualization.zoomOut()"><i class="fas fa-search-minus"></i></button>
+                <button onclick="GraphVisualization.resetView()"><i class="fas fa-expand"></i> 重置视图</button>
+                <div class="graph-legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#4fc3f7"></div> 类</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#81c784"></div> 方法</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ffb74d"></div> 调用</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#e57373"></div> 继承</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ba68c8"></div> 组件</div>
+                </div>
+            </div>
+            <canvas id="graphCanvas"></canvas>
+            <div class="graph-info" id="graphInfo"></div>
+        </section>
+    </main>
+    <script src="/static/js/graph_visualization.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            GraphVisualization.init('graphCanvas', 'graphInfo');
+            GraphVisualization.load();
+        });
+    </script>
+</body>
+</html>

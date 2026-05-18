@@ -1,0 +1,9 @@
+# ArkTS Knowledge Graph - 依赖清单
+# 核心依赖
+flask>=3.0.0
+flask-cors>=4.0.0
+requests>=2.31.0
+tqdm>=4.66.0
+
+# 解析依赖
+# tree-sitter>=0.21.0  # ArkTS tree-sitter 解析器（可选增强）

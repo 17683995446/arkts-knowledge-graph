@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArkTS 知识图谱 - 首页</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <i class="fas fa-project-diagram"></i>
+            <span>ArkTS 知识图谱</span>
+        </div>
+        <ul class="sidebar-menu">
+            <li class="active"><a href="/"><i class="fas fa-home"></i> 总览</a></li>
+            <li><a href="/graph"><i class="fas fa-bezier-curve"></i> 知识图谱</a></li>
+            <li><a href="/query"><i class="fas fa-robot"></i> AI 智能查询</a></li>
+            <li><a href="/classes"><i class="fas fa-cubes"></i> 类浏览器</a></li>
+            <li><a href="/stats"><i class="fas fa-chart-bar"></i> 统计分析</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            <small>v1.0.0</small>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <header class="top-bar">
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" id="globalSearch" placeholder="全局搜索类、方法、属性..." />
+            </div>
+            <div class="top-actions">
+                <span id="buildStatus" class="status-badge">就绪</span>
+            </div>
+        </header>
+
+        <section class="dashboard" id="dashboard">
+            <div class="stats-grid" id="statsGrid">
+                <!-- 动态填充 -->
+            </div>
+
+            <div class="dashboard-panels">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-cube"></i> 最近解析的类</h3>
+                        <a href="/classes" class="panel-link">查看全部 →</a>
+                    </div>
+                    <div class="panel-body" id="recentClasses">
+                        <div class="loading-spinner"></div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-door-open"></i> 入口组件</h3>
+                    </div>
+                    <div class="panel-body" id="entryComponents">
+                        <div class="loading-spinner"></div>
+                    </div>
+                </div>
+
+                <div class="panel full-width">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-database"></i> 数据库统计</h3>
+                        <a href="/stats" class="panel-link">详细统计 →</a>
+                    </div>
+                    <div class="panel-body" id="dbStats">
+                        <div class="loading-spinner"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/js/main.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            Dashboard.loadOverview();
+            Dashboard.loadRecentClasses();
+            Dashboard.loadEntryComponents();
+            Dashboard.loadDatabaseStats();
+
+            // 全局搜索
+            const searchInput = document.getElementById('globalSearch');
+            let searchTimeout;
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    if (e.target.value.trim()) {
+                        window.location.href = `/classes?search=${encodeURIComponent(e.target.value.trim())}`;
+                    }
+                }, 500);
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>统计分析</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        .stats-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+        .stat-card {
+            background: #1a1f3a; border-radius: 12px; padding: 20px;
+            border: 1px solid #2a2f4a;
+        }
+        .stat-card h4 { color: #888; font-size: 13px; margin-bottom: 8px; }
+        .stat-card .value { font-size: 32px; font-weight: 700; color: #4fc3f7; }
+        .stat-card .sub { color: #666; font-size: 12px; margin-top: 4px; }
+        .chart-container { background: #1a1f3a; border-radius: 12px; padding: 20px; border: 1px solid #2a2f4a; margin-bottom: 16px; }
+        .chart-container h3 { color: #e0e0e0; margin-bottom: 16px; font-size: 15px; }
+        .bar-chart { display: flex; flex-direction: column; gap: 8px; }
+        .bar-row { display: flex; align-items: center; gap: 12px; }
+        .bar-label { width: 150px; font-size: 12px; color: #aaa; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bar-track { flex: 1; height: 24px; background: #0a0e27; border-radius: 4px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: #fff; min-width: 30px; }
+        .bar-fill.blue { background: linear-gradient(90deg, #1565c0, #4fc3f7); }
+        .bar-fill.green { background: linear-gradient(90deg, #2e7d32, #81c784); }
+        .bar-fill.orange { background: linear-gradient(90deg, #e65100, #ffb74d); }
+        .bar-fill.purple { background: linear-gradient(90deg, #6a1b9a, #ba68c8); }
+        .bar-fill.red { background: linear-gradient(90deg, #c62828, #e57373); }
+        .db-table-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+        .db-table-item {
+            background: #0a0e27; border-radius: 8px; padding: 14px;
+            border: 1px solid #2a2f4a; text-align: center;
+        }
+        .db-table-item .table-name { color: #4fc3f7; font-size: 14px; font-weight: 500; }
+        .db-table-item .table-count { color: #e0e0e0; font-size: 24px; font-weight: 700; margin: 6px 0; }
+        .db-table-item .table-label { color: #666; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header"><i class="fas fa-project-diagram"></i><span>ArkTS 知识图谱</span></div>
+        <ul class="sidebar-menu">
+            <li><a href="/"><i class="fas fa-home"></i> 总览</a></li>
+            <li><a href="/graph"><i class="fas fa-bezier-curve"></i> 知识图谱</a></li>
+            <li><a href="/query"><i class="fas fa-robot"></i> AI 智能查询</a></li>
+            <li><a href="/classes"><i class="fas fa-cubes"></i> 类浏览器</a></li>
+            <li class="active"><a href="/stats"><i class="fas fa-chart-bar"></i> 统计分析</a></li>
+        </ul>
+    </nav>
+    <main class="main-content">
+        <header class="top-bar"><h2><i class="fas fa-chart-bar"></i> 统计分析</h2></header>
+        <section>
+            <div class="stats-grid-2" id="summaryCards"></div>
+            <div class="chart-container">
+                <h3><i class="fas fa-database"></i> 数据库表统计</h3>
+                <div class="db-table-list" id="dbTableList"></div>
+            </div>
+            <div class="chart-container">
+                <h3><i class="fas fa-file-code"></i> 文件大小分布 (Top 10)</h3>
+                <div class="bar-chart" id="fileSizeChart"></div>
+            </div>
+            <div class="chart-container">
+                <h3><i class="fas fa-cubes"></i> 类方法数量分布 (Top 10)</h3>
+                <div class="bar-chart" id="classMethodChart"></div>
+            </div>
+        </section>
+    </main>
+    <script src="/static/js/stats_page.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => StatsPage.init());
+    </script>
+</body>
+</html>

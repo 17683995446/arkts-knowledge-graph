@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 智能查询</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        .query-container { max-width: 900px; margin: 0 auto; }
+        .query-input-area {
+            background: #1a1f3a; border-radius: 12px; padding: 20px; margin-bottom: 20px;
+            border: 1px solid #2a2f4a;
+        }
+        .query-input-area textarea {
+            width: 100%; min-height: 80px; background: #0a0e27; border: 1px solid #2a2f4a;
+            border-radius: 8px; padding: 12px; color: #e0e0e0; font-size: 14px;
+            font-family: 'Noto Sans SC', sans-serif; resize: vertical;
+        }
+        .query-input-area textarea:focus { outline: none; border-color: #4fc3f7; }
+        .query-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+        .query-actions button {
+            padding: 8px 20px; border-radius: 8px; border: none; cursor: pointer;
+            font-size: 14px; font-weight: 500; transition: all 0.2s;
+        }
+        .btn-primary { background: #4fc3f7; color: #0a0e27; }
+        .btn-primary:hover { background: #29b6f6; }
+        .btn-secondary { background: #2a2f4a; color: #e0e0e0; }
+        .btn-secondary:hover { background: #3a3f5a; }
+        .suggestion-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+        .chip {
+            padding: 6px 14px; background: #1a1f3a; border: 1px solid #2a2f4a;
+            border-radius: 20px; color: #aaa; font-size: 13px; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .chip:hover { border-color: #4fc3f7; color: #4fc3f7; }
+        .query-result {
+            background: #1a1f3a; border-radius: 12px; padding: 20px;
+            border: 1px solid #2a2f4a; margin-bottom: 16px;
+        }
+        .query-result .question { font-size: 15px; color: #e0e0e0; margin-bottom: 12px; font-weight: 500; }
+        .query-result .answer {
+            font-size: 14px; color: #b0b0b0; line-height: 1.8; padding: 12px;
+            background: #0a0e27; border-radius: 8px; margin-bottom: 12px;
+        }
+        .query-result .sql-block {
+            font-family: 'Fira Code', monospace; font-size: 12px; color: #81c784;
+            background: #0a0e27; padding: 10px; border-radius: 6px;
+            margin-bottom: 12px; overflow-x: auto;
+        }
+        .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .result-table th {
+            background: #2a2f4a; color: #4fc3f7; padding: 8px 12px; text-align: left;
+            position: sticky; top: 0;
+        }
+        .result-table td { padding: 6px 12px; border-bottom: 1px solid #1a1f3a; color: #c0c0c0; }
+        .result-table tr:hover td { background: #1a1f3a; }
+        .result-table-wrapper { max-height: 300px; overflow: auto; border-radius: 8px; }
+        .loading-indicator { display: flex; align-items: center; gap: 8px; color: #4fc3f7; padding: 20px; }
+        .loading-dots span {
+            width: 6px; height: 6px; background: #4fc3f7; border-radius: 50%;
+            animation: blink 1.4s infinite both;
+        }
+        .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink { 0%, 80%, 100% { opacity: 0; } 40% { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header"><i class="fas fa-project-diagram"></i><span>ArkTS 知识图谱</span></div>
+        <ul class="sidebar-menu">
+            <li><a href="/"><i class="fas fa-home"></i> 总览</a></li>
+            <li><a href="/graph"><i class="fas fa-bezier-curve"></i> 知识图谱</a></li>
+            <li class="active"><a href="/query"><i class="fas fa-robot"></i> AI 智能查询</a></li>
+            <li><a href="/classes"><i class="fas fa-cubes"></i> 类浏览器</a></li>
+            <li><a href="/stats"><i class="fas fa-chart-bar"></i> 统计分析</a></li>
+        </ul>
+    </nav>
+    <main class="main-content">
+        <header class="top-bar">
+            <h2><i class="fas fa-robot"></i> AI 智能查询</h2>
+            <button class="btn-secondary" onclick="QueryPage.clearHistory()" style="padding:6px 14px;border-radius:6px;border:1px solid #2a2f4a;background:#1a1f3a;color:#e0e0e0;cursor:pointer;font-size:13px;">
+                <i class="fas fa-trash"></i> 清空历史
+            </button>
+        </header>
+        <section class="query-container">
+            <div class="suggestion-chips">
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">有哪些类？</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">统计每个文件的类数量</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">找出所有静态方法</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">哪些类有最多的方法？</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">找出所有被调用最多的方法</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">有哪些入口组件？</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">找出所有私有方法</span>
+                <span class="chip" onclick="QueryPage.ask(this.textContent)">哪些文件最大？</span>
+            </div>
+            <div class="query-input-area">
+                <textarea id="queryInput" placeholder="用中文描述你想查询的内容，例如：'有哪些类'、'统计每个文件的方法数量'..."></textarea>
+                <div class="query-actions">
+                    <button class="btn-secondary" onclick="QueryPage.clearInput()">清空</button>
+                    <button class="btn-primary" onclick="QueryPage.submit()" id="submitBtn">
+                        <i class="fas fa-paper-plane"></i> 发送查询
+                    </button>
+                </div>
+            </div>
+            <div id="queryResults"></div>
+        </section>
+    </main>
+    <script src="/static/js/query_page.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => QueryPage.init());
+        document.getElementById('queryInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) QueryPage.submit();
+        });
+    </script>
+</body>
+</html>
