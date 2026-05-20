@@ -1,0 +1,1 @@
+class Trans8 { m(): void {} }

@@ -1,0 +1,1 @@
+class Inject1 { name: string = '' OR '1'='1' }

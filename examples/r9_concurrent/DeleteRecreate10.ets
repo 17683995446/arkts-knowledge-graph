@@ -1,0 +1,1 @@
+class DelRec10 { newMethod(): void {} }

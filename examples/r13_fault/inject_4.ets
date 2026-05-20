@@ -1,0 +1,1 @@
+class Inject4 { name: string = '../../../etc/passwd' }

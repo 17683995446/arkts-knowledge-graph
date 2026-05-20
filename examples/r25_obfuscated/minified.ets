@@ -1,0 +1,1 @@
+class MinifiedClass{private _data:string='';get(){return this._data}set(v:string){this._data=v}clear(){this._data=''}}

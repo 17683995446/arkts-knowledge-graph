@@ -131,17 +131,7 @@ class GraphQueryService:
 
     def get_method_callers(self, method_id: int) -> List[Dict]:
         """获取调用此方法的所有方法"""
-        return self._conn_mgr.execute_query("""
-            SELECT m.*, f.path as file_path, c.name as class_name
-            FROM methods m
-            JOIN files f ON m.file_id = f.id
-            LEFT JOIN classes c ON m.class_id = c.id
-            JOIN calls ca ON ca.callee_id = m.id
-            WHERE ca.caller_id = ?
-        """, (method_id,))
-
-    def get_method_callees(self, method_id: int) -> List[Dict]:
-        """获取此方法调用的所有方法"""
+        # BUG-A修复: 交换WHERE条件，callers应查找callee_id为目标方法的记录
         return self._conn_mgr.execute_query("""
             SELECT m.*, f.path as file_path, c.name as class_name
             FROM methods m
@@ -149,6 +139,18 @@ class GraphQueryService:
             LEFT JOIN classes c ON m.class_id = c.id
             JOIN calls ca ON ca.caller_id = m.id
             WHERE ca.callee_id = ?
+        """, (method_id,))
+
+    def get_method_callees(self, method_id: int) -> List[Dict]:
+        """获取此方法调用的所有方法"""
+        # BUG-A修复: 交换WHERE条件，callees应查找caller_id为目标方法的记录
+        return self._conn_mgr.execute_query("""
+            SELECT m.*, f.path as file_path, c.name as class_name
+            FROM methods m
+            JOIN files f ON m.file_id = f.id
+            LEFT JOIN classes c ON m.class_id = c.id
+            JOIN calls ca ON ca.callee_id = m.id
+            WHERE ca.caller_id = ?
         """, (method_id,))
 
     # ==================== 调用图查询 ====================

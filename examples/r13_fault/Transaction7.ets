@@ -1,0 +1,1 @@
+class Trans7 { m(): void {} }

@@ -1,0 +1,1 @@
+class Inject0 { name: string = ''; DROP TABLE files; --' }

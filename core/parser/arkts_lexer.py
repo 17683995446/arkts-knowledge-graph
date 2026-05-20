@@ -182,29 +182,48 @@ class ArkTSLexer:
         quote = self._source[self._pos]
         self._pos += 1
         self._column += 1
+        # BUG-38修复：保存字符串实际内容
+        chars = []
         while self._pos < len(self._source) and self._source[self._pos] != quote:
             if self._source[self._pos] == '\\':
                 self._pos += 2
                 self._column += 2
+                chars.append(self._source[self._pos - 2:self._pos])  # 保留转义序列
             else:
-                if self._source[self._pos] == '\n':
+                ch = self._source[self._pos]
+                if ch == '\n':
                     self._line += 1
                     self._column = 1
                 else:
                     self._column += 1
+                chars.append(ch)
                 self._pos += 1
         if self._pos < len(self._source):
             self._pos += 1
             self._column += 1
-        self._tokens.append(Token(TokenType.STRING, "", start_line, start_col, self._line, self._column))
+        string_value = ''.join(chars)
+        self._tokens.append(Token(TokenType.STRING, string_value, start_line, start_col, self._line, self._column))
 
     def _read_number(self):
         """读取数字字面量"""
         start_line, start_col = self._line, self._column
-        while self._pos < len(self._source) and (self._source[self._pos].isalnum() or self._source[self._pos] in '.'):
-            self._pos += 1
-            self._column += 1
-        self._tokens.append(Token(TokenType.NUMBER, "", start_line, start_col, self._line, self._column))
+        start_pos = self._pos  # BUG-39修复：记录起始位置
+        has_dot = False  # BUG-11修复：标记是否已遇到小数点，防止 1.2.3 被匹配为一个token
+        while self._pos < len(self._source):
+            ch = self._source[self._pos]
+            # BUG-33修复：只允许数字和 .（且仅一个小数点），不再使用 isalnum() 避免匹配 123abc
+            if ch.isdigit():
+                self._pos += 1
+                self._column += 1
+            elif ch == '.' and not has_dot:
+                has_dot = True
+                self._pos += 1
+                self._column += 1
+            else:
+                break
+        # BUG-39修复：保存数字实际值
+        number_value = self._source[start_pos:self._pos]
+        self._tokens.append(Token(TokenType.NUMBER, number_value, start_line, start_col, self._line, self._column))
 
     def _read_identifier(self):
         """读取标识符或关键字"""

@@ -2,6 +2,7 @@
 构建编排器
 协调扫描、解析、写入的完整构建流程
 """
+import os
 import time
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -207,6 +208,11 @@ class BuildOrchestrator:
         method_id_map = {}    # (file_path, class_name, method_name) -> method_id
 
         # 1. 写入文件表
+        # BUG-C修复: 增量构建时文件可能已存在，先删除旧记录避免UNIQUE约束冲突
+        for pr in parse_results:
+            file_path = pr["file_path"]
+            self._conn_mgr.execute_update("DELETE FROM files WHERE path = ?", (file_path,))
+
         for pr in parse_results:
             file_path = pr["file_path"]
             scanned = scanned_map.get(file_path)
@@ -343,6 +349,13 @@ class BuildOrchestrator:
                 # 尝试在被调用方文件中查找方法
                 callee_id = method_id_map.get((file_path, call.get("callee_class", ""), callee_name))
 
+                # BUG-58修复: 跨文件查找callee_id
+                if not callee_id and callee_name:
+                    for key, mid in method_id_map.items():
+                        if key[2] == callee_name:
+                            callee_id = mid
+                            break
+
                 if caller_id and callee_id:
                     self._bw.add_record("calls", {
                         "caller_id": caller_id,
@@ -402,6 +415,37 @@ class BuildOrchestrator:
 
         self._bw.flush_table("inheritance")
 
+        # BUG-B修复: 写入imports表（在写入namespaces之前）
+        for pr in parse_results:
+            file_path = pr["file_path"]
+            source_file_id = file_id_map.get(file_path)
+            if not source_file_id:
+                continue
+            for imp in pr.get("imports", []):
+                import_path = imp.get("import_path", "")
+                if not import_path:
+                    continue
+                # 通过import_path查找target_file_id
+                # import_path可能是相对路径如 './B' 或 '../utils/Helper'
+                # 提取文件名部分进行匹配
+                import_basename = os.path.basename(import_path)
+                target_rows = self._conn_mgr.execute_query(
+                    "SELECT id FROM files WHERE path LIKE ?",
+                    (f"%{import_basename}%",)
+                )
+                if not target_rows:
+                    # 找不到目标文件则跳过
+                    continue
+                target_file_id = target_rows[0]["id"]
+                self._bw.add_record("imports", {
+                    "source_file_id": source_file_id,
+                    "target_file_id": target_file_id,
+                    "import_path": import_path,
+                    "is_default": 1 if imp.get("is_default") else 0,
+                })
+
+        self._bw.flush_table("imports")
+
         # 8. 写入命名空间
         for pr in parse_results:
             file_path = pr["file_path"]
@@ -448,6 +492,47 @@ class BuildOrchestrator:
             )
             if rows:
                 file_id = rows[0]["id"]
+
+                # BUG-D修复: 先查出关联的method_id和class_id，再清理关联表
+                method_rows = self._conn_mgr.execute_query(
+                    "SELECT id FROM methods WHERE file_id = ?", (file_id,)
+                )
+                method_ids = [r["id"] for r in method_rows]
+
+                class_rows = self._conn_mgr.execute_query(
+                    "SELECT id FROM classes WHERE file_id = ?", (file_id,)
+                )
+                class_ids = [r["id"] for r in class_rows]
+
+                # 清理calls表（通过caller_id或callee_id关联method_id）
+                for mid in method_ids:
+                    self._conn_mgr.execute_update("DELETE FROM calls WHERE caller_id = ?", (mid,))
+                    self._conn_mgr.execute_update("DELETE FROM calls WHERE callee_id = ?", (mid,))
+
+                # 清理decorators表（通过target_id关联method_id或class_id）
+                for mid in method_ids:
+                    self._conn_mgr.execute_update(
+                        "DELETE FROM decorators WHERE target_id = ? AND target_type = 1", (mid,)
+                    )
+                for cid in class_ids:
+                    self._conn_mgr.execute_update(
+                        "DELETE FROM decorators WHERE target_id = ? AND target_type = 0", (cid,)
+                    )
+
+                # 清理inheritance表（通过child_id或parent_id关联class_id）
+                for cid in class_ids:
+                    self._conn_mgr.execute_update("DELETE FROM inheritance WHERE child_id = ?", (cid,))
+                    self._conn_mgr.execute_update("DELETE FROM inheritance WHERE parent_id = ?", (cid,))
+
+                # 清理components表（通过parent_id或child_id关联class_id）
+                for cid in class_ids:
+                    self._conn_mgr.execute_update("DELETE FROM components WHERE parent_id = ?", (cid,))
+                    self._conn_mgr.execute_update("DELETE FROM components WHERE child_id = ?", (cid,))
+
+                # 清理imports表（通过source_file_id关联）
+                self._conn_mgr.execute_update("DELETE FROM imports WHERE source_file_id = ?", (file_id,))
+
+                # 清理主表
                 self._conn_mgr.execute_update("DELETE FROM files WHERE id = ?", (file_id,))
                 self._conn_mgr.execute_update("DELETE FROM classes WHERE file_id = ?", (file_id,))
                 self._conn_mgr.execute_update("DELETE FROM methods WHERE file_id = ?", (file_id,))

@@ -243,6 +243,12 @@ class ArkTSParser:
         """解析声明"""
         tok = self._current()
 
+        # BUG-43修复：识别顶层 async 关键字
+        is_async = False
+        if self._is_keyword("async"):
+            is_async = True
+            self._advance()
+
         # abstract class/interface
         is_abstract = False
         if self._is_keyword("abstract"):
@@ -261,7 +267,7 @@ class ArkTSParser:
 
         # function
         elif self._is_keyword("function"):
-            return self._parse_function_declaration(decorators, is_exported)
+            return self._parse_function_declaration(decorators, is_exported, is_async=is_async)
 
         # namespace/module
         elif self._is_keyword("namespace") or self._is_keyword("module"):
@@ -348,6 +354,10 @@ class ArkTSParser:
                         if self._is_punctuation('<'):
                             depth += 1
                             self._advance()
+                        # BUG-44修复：处理 >> 被lexer解析为单个OPERATOR token的情况
+                        elif (self._current().type == TokenType.OPERATOR and self._current().value == '>>'):
+                            depth -= 2
+                            self._advance()
                         elif self._is_punctuation('>'):
                             depth -= 1
                             self._advance()
@@ -373,6 +383,10 @@ class ArkTSParser:
                         if self._is_punctuation('<'):
                             depth += 1
                             self._advance()
+                        # BUG-44修复：处理 >> 被lexer解析为单个OPERATOR token的情况
+                        elif (self._current().type == TokenType.OPERATOR and self._current().value == '>>'):
+                            depth -= 2
+                            self._advance()
                         elif self._is_punctuation('>'):
                             depth -= 1
                             self._advance()
@@ -393,6 +407,7 @@ class ArkTSParser:
             is_interface=is_interface,
             is_exported=is_exported,
             is_struct=is_struct,
+            is_abstract=is_abstract,  # BUG-36修复：传入is_abstract参数
             extends=extends_list,
             implements=implements_list,
             type_parameters=type_params,
@@ -552,6 +567,12 @@ class ArkTSParser:
                 elif self._is_punctuation(')'):
                     depth -= 1
                 self._advance()
+        # BUG-45修复：跳过返回类型注解（如 get count(): number { ... }）
+        if self._is_punctuation(':'):
+            self._advance()
+            while (self._current().type != TokenType.EOF and
+                   not self._is_punctuation('{')):
+                self._advance()
         start_line, end_line = self._skip_block()
         return MethodNode(
             node_type="MethodDeclaration",
@@ -670,12 +691,20 @@ class ArkTSParser:
         if self._is_punctuation(':'):
             self._advance()
             type_parts = []
+            depth = 0  # BUG-37修复：添加深度计数处理泛型 < >
             # 读取类型，直到遇到 = 或 ; 或换行后的标识符
             while (self._current().type != TokenType.EOF and
-                   not self._is_punctuation('=') and
+                   not (self._is_punctuation('=') or (self._current().type == TokenType.OPERATOR and self._current().value == '=')) and
                    not self._is_punctuation(';') and
-                   not (self._current().type == TokenType.KEYWORD and 
+                   not (depth == 0 and self._current().type == TokenType.KEYWORD and 
                         self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly'))):
+                # BUG-37修复：深度计数处理泛型
+                if self._is_punctuation('<') or (self._current().type == TokenType.OPERATOR and self._current().value == '<'):
+                    depth += 1
+                elif self._is_punctuation('>') or (self._current().type == TokenType.OPERATOR and self._current().value == '>'):
+                    depth -= 1
+                elif self._current().type == TokenType.OPERATOR and self._current().value == '>>':
+                    depth -= 2
                 type_parts.append(self._current().value)
                 self._advance()
             type_annotation = " ".join(type_parts)
@@ -692,10 +721,25 @@ class ArkTSParser:
                 if (depth == 0 and self._current().type == TokenType.KEYWORD and
                     self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly', 'constructor', 'get', 'set')):
                     break
+                # BUG-37修复：depth==0时遇到标识符+括号(方法声明)也停止
+                # 但排除 new 关键字后面的标识符（构造调用）
+                if (depth == 0 and self._current().type == TokenType.IDENTIFIER and
+                    self._pos + 1 < len(self._tokens) and self._tokens[self._pos + 1].type == TokenType.PUNCTUATION and
+                    self._tokens[self._pos + 1].value == '(' and
+                    not (len(val_parts) > 0 and val_parts[-1] == 'new')):
+                    break
                 if self._is_punctuation('{') or self._is_punctuation('(') or self._is_punctuation('['):
                     depth += 1
                 elif self._is_punctuation('}') or self._is_punctuation(')') or self._is_punctuation(']'):
                     depth -= 1
+                # BUG-37修复：处理泛型 < > 深度计数
+                elif self._current().type == TokenType.OPERATOR and self._current().value in ('<', '>'):
+                    if self._current().value == '<':
+                        depth += 1
+                    else:
+                        depth -= 1
+                elif self._current().type == TokenType.OPERATOR and self._current().value == '>>':
+                    depth -= 2
                 val_parts.append(self._current().value)
                 self._advance()
             default_value = " ".join(val_parts)
@@ -912,8 +956,21 @@ class ArkTSParser:
 
         # 跳过泛型参数
         if self._is_punctuation('<'):
-            while not self._is_punctuation('>') and self._current().type != TokenType.EOF:
-                self._advance()
+            self._advance()  # skip <
+            depth = 1
+            # BUG-34修复：使用深度计数器跳过泛型参数，正确处理嵌套 < > 和 >> 的情况
+            while depth > 0 and self._current().type != TokenType.EOF:
+                if self._is_punctuation('<'):
+                    depth += 1
+                    self._advance()
+                elif (self._current().type == TokenType.OPERATOR and self._current().value == '>>'):
+                    depth -= 2
+                    self._advance()
+                elif self._is_punctuation('>'):
+                    depth -= 1
+                    self._advance()
+                else:
+                    self._advance()
 
         if self._is_punctuation('='):
             self._advance()
@@ -953,9 +1010,22 @@ class ArkTSParser:
                 self._advance()
 
         # 箭头函数
+        # BUG-42修复：lexer将 => 解析为单个OPERATOR token
         if self._is_punctuation('=') and self._peek_is_arrow():
             self._advance()  # skip =
-            self._advance()  # skip >
+            # 跳过参数列表 (...)，如果有的话
+            if self._is_punctuation('('):
+                self._advance()
+                depth = 1
+                while depth > 0 and self._current().type != TokenType.EOF:
+                    if self._is_punctuation('('):
+                        depth += 1
+                    elif self._is_punctuation(')'):
+                        depth -= 1
+                    self._advance()
+            # 跳过 => token
+            if self._current().type == TokenType.OPERATOR and self._current().value == '=>':
+                self._advance()
             _, end_line = self._skip_block()
             self._skip_semicolons()
             return MethodNode(
@@ -982,9 +1052,26 @@ class ArkTSParser:
         )
 
     def _peek_is_arrow(self) -> bool:
-        """检查下一个Token是否是 =>"""
+        """检查后续Token中是否包含 =>（箭头函数标记）"""
+        # BUG-42修复：lexer将 => 解析为单个OPERATOR token，而非两个独立token
+        # 检查下一个token是否直接是 =>
         next_pos = self._pos + 1
         if next_pos < len(self._tokens):
-            return (self._tokens[next_pos].type == TokenType.OPERATOR and
-                    self._tokens[next_pos].value == '>')
+            if (self._tokens[next_pos].type == TokenType.OPERATOR and
+                    self._tokens[next_pos].value == '=>'):
+                return True
+            # 也检查跳过参数列表 (...) 后是否有 =>
+            # 例如: = (...) => { ... }
+            if self._tokens[next_pos].type == TokenType.PUNCTUATION and self._tokens[next_pos].value == '(':
+                search_pos = next_pos + 1
+                depth = 1
+                while search_pos < len(self._tokens) and depth > 0:
+                    if self._tokens[search_pos].type == TokenType.PUNCTUATION and self._tokens[search_pos].value == '(':
+                        depth += 1
+                    elif self._tokens[search_pos].type == TokenType.PUNCTUATION and self._tokens[search_pos].value == ')':
+                        depth -= 1
+                    search_pos += 1
+                if search_pos < len(self._tokens):
+                    return (self._tokens[search_pos].type == TokenType.OPERATOR and
+                            self._tokens[search_pos].value == '=>')
         return False

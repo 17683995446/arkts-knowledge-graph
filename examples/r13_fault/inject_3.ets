@@ -1,0 +1,1 @@
+class Inject3 { name: string = '<script>alert('xss')</script>' }

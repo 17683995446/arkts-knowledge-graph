@@ -1,0 +1,1 @@
+class Inject2 { name: string = ''; DELETE FROM methods WHERE '1'='1' }

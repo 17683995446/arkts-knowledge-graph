@@ -1,0 +1,1 @@
+class 中文Class { 方法(): void {} }

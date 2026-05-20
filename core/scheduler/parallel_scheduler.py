@@ -159,7 +159,8 @@ class ParallelScheduler:
             return self._parse_sequential(file_paths, show_progress, start_time, result)
 
         result.all_parse_results = parse_results
-        result.total_time_ms = (time.time() - start_time) * 1000
+        # BUG-E修复: 多进程模式中time被重命名为_time，此处应使用_time.time()
+        result.total_time_ms = (_time.time() - start_time) * 1000
         result.parse_time_ms = sum(wr.parse_time_ms for wr in result.worker_results)
         logger.info(f"并行解析完成: {result.success_count}/{result.total_files} 成功, 耗时 {result.total_time_ms/1000:.1f}s")
         return result

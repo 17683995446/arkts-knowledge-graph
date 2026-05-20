@@ -1,0 +1,1 @@
+class Trans4 { m(): void {} }
