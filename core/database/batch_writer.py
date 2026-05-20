@@ -45,16 +45,16 @@ class BatchWriter:
             self.add_record(table_name, record)
         return len(self._buffers.get(table_name, []))
 
-    def flush_table(self, table_name: str) -> int:
-        """将指定表的缓冲区写入数据库"""
+    def flush_table(self, table_name: str) -> List[int]:
+        """将指定表的缓冲区写入数据库，返回插入的ID列表"""
         if table_name not in self._buffers or not self._buffers[table_name]:
-            return 0
+            return []
 
         records = self._buffers[table_name]
         count = len(records)
 
         try:
-            self._write_batch(table_name, records)
+            inserted_ids = self._write_batch(table_name, records)
             self._total_written += count
             self._total_flushes += 1
             logger.debug(f"批量写入 {table_name}: {count} 条记录")
@@ -63,32 +63,51 @@ class BatchWriter:
             raise
 
         self._buffers[table_name] = []
-        return count
+        return inserted_ids
 
     def flush_all(self) -> int:
         """将所有缓冲区写入数据库"""
         total = 0
         for table_name in list(self._buffers.keys()):
-            total += self.flush_table(table_name)
+            ids = self.flush_table(table_name)
+            total += len(ids)
         if total > 0:
             logger.info(f"全部flush完成: {total} 条记录, 累计flush {self._total_flushes} 次")
         return total
 
-    def _write_batch(self, table_name: str, records: List[Dict[str, Any]]) -> None:
-        """使用 executemany 高效批量写入"""
+    # 关系表（无 id 列），使用 INSERT OR IGNORE + executemany
+    RELATION_TABLES = {'calls', 'components', 'imports', 'inheritance', 'build_metadata'}
+
+    def _write_batch(self, table_name: str, records: List[Dict[str, Any]]) -> List[int]:
+        """使用 executemany 高效批量写入，返回插入的ID列表"""
         if not records:
-            return
+            return []
 
         columns = list(records[0].keys())
         placeholders = ", ".join(["?"] * len(columns))
         col_names = ", ".join(columns)
-        sql = f"INSERT OR IGNORE INTO {table_name} ({col_names}) VALUES ({placeholders})"
 
         values = [tuple(r.get(c) for c in columns) for r in records]
 
         conn_mgr = get_connection_manager()
-        with conn_mgr.get_connection() as conn:
-            conn.executemany(sql, values)
+
+        if table_name in self.RELATION_TABLES:
+            # 关系表没有 id 列，使用 INSERT OR IGNORE + executemany
+            sql = f"INSERT OR IGNORE INTO {table_name} ({col_names}) VALUES ({placeholders})"
+            with conn_mgr.get_connection() as conn:
+                conn.executemany(sql, values)
+            return []
+        else:
+            # 实体表使用 RETURNING id 获取插入的ID（SQLite 3.35+）
+            sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) RETURNING id"
+            inserted_ids = []
+            with conn_mgr.get_connection() as conn:
+                for vals in values:
+                    cursor = conn.execute(sql, vals)
+                    row = cursor.fetchone()
+                    if row:
+                        inserted_ids.append(row[0])
+            return inserted_ids
 
     def get_buffer_sizes(self) -> Dict[str, int]:
         """获取各表缓冲区大小"""

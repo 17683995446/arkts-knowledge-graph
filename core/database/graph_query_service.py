@@ -136,8 +136,8 @@ class GraphQueryService:
             FROM methods m
             JOIN files f ON m.file_id = f.id
             LEFT JOIN classes c ON m.class_id = c.id
-            JOIN calls ca ON ca.caller_id = m.id
-            WHERE ca.callee_id = ?
+            JOIN calls ca ON ca.callee_id = m.id
+            WHERE ca.caller_id = ?
         """, (method_id,))
 
     def get_method_callees(self, method_id: int) -> List[Dict]:
@@ -147,8 +147,8 @@ class GraphQueryService:
             FROM methods m
             JOIN files f ON m.file_id = f.id
             LEFT JOIN classes c ON m.class_id = c.id
-            JOIN calls ca ON ca.callee_id = m.id
-            WHERE ca.caller_id = ?
+            JOIN calls ca ON ca.caller_id = m.id
+            WHERE ca.callee_id = ?
         """, (method_id,))
 
     # ==================== 调用图查询 ====================
@@ -242,9 +242,10 @@ class GraphQueryService:
 
     def get_all_files(self, limit: int = 500) -> List[Dict]:
         """获取所有文件"""
-        return self._conn_mgr.execute_query(
-            "SELECT * FROM files ORDER BY path LIMIT ?", (limit,)
+        files = self._conn_mgr.execute_query(
+            "SELECT id, path, line_count, language, last_scanned FROM files ORDER BY path LIMIT ?", (limit,)
         )
+        return files
 
     def get_file_by_path(self, path: str) -> Optional[Dict]:
         """根据路径获取文件"""

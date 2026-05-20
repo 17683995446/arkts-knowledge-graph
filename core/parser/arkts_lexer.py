@@ -47,6 +47,7 @@ ARKTS_KEYWORDS = {
     "case", "break", "continue", "new", "this", "super", "class", "extends",
     "implements", "interface", "enum", "type", "struct", "namespace", "module",
     "public", "private", "protected", "static", "readonly", "abstract",
+    "override", "get", "set", "constructor",
     "async", "await", "try", "catch", "finally", "throw", "typeof", "instanceof",
     "void", "null", "undefined", "true", "false", "of", "in", "yield",
     # ArkUI 特有

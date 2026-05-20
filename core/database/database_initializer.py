@@ -6,7 +6,6 @@ import time
 import logging
 from core.database.connection_manager import get_connection_manager
 from core.database.schema_definitions import get_schema_ddl, get_index_ddl
-from core.database.batch_writer import BatchWriter
 
 logger = logging.getLogger(__name__)
 

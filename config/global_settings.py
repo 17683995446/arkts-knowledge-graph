@@ -28,7 +28,7 @@ IGNORED_FILES = {".DS_Store", "Thumbs.db", "package-lock.json", "yarn.lock"}
 
 # ==================== 硅基流动 LLM 配置 ====================
 LLM_API_BASE_URL = "https://api.siliconflow.cn/v1/chat/completions"
-LLM_API_KEY = "sk-uqelhavcdhfxjzjesdenxpbtqombamjniazzjtbssmdcwdvg"
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-uqelhavcdhfxjzjesdenxpbtqombamjniazzjtbssmdcwdvg")
 LLM_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 LLM_MAX_TOKENS = 2048
 LLM_TEMPERATURE = 0.1      # 低温度确保SQL生成稳定

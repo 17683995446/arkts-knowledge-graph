@@ -102,7 +102,17 @@ class BuildOrchestrator:
         self._write_parse_results(sched_result.all_parse_results, scan_result.files)
         report.write_time_ms = (time.time() - write_start) * 1000
 
-        # 步骤5: 更新构建元数据
+        # 步骤5: 更新报告统计
+        report.classes_extracted = self._last_stats.get("classes", 0)
+        report.methods_extracted = self._last_stats.get("methods", 0)
+        report.properties_extracted = self._last_stats.get("properties", 0)
+        report.calls_extracted = self._last_stats.get("calls", 0)
+        report.imports_extracted = self._last_stats.get("imports", 0)
+        report.decorators_extracted = self._last_stats.get("decorators", 0)
+        report.inheritance_extracted = self._last_stats.get("inheritance", 0)
+        report.namespaces_extracted = self._last_stats.get("namespaces", 0)
+
+        # 步骤6: 更新构建元数据
         self._update_build_metadata(report)
 
         # 汇总统计

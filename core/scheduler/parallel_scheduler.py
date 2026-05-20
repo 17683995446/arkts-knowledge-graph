@@ -104,7 +104,6 @@ class ParallelScheduler:
 
         # 默认使用单进程模式（沙箱环境通常不支持多进程）
         # 用户可以通过环境变量 FORCE_MULTIPROCESS=1 强制启用多进程
-        import os
         use_multiprocess = os.environ.get('FORCE_MULTIPROCESS', '').lower() in ('1', 'true', 'yes')
         
         if use_multiprocess:

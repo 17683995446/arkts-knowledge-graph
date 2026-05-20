@@ -194,9 +194,20 @@ class ArkTSParser:
                 if self._is_identifier():
                     imported_names.append(self._current().value)
                     self._advance()
-                    if self._is_keyword("as") and self._is_identifier():
+                    # 处理 as 别名: import { D as DD }
+                    if self._is_keyword("as"):
                         self._advance()  # skip 'as'
-                        self._advance()  # skip alias
+                        if self._is_identifier():
+                            self._advance()  # skip alias
+                elif self._is_keyword("type"):
+                    # import { type Foo } 中的 type 关键字
+                    self._advance()
+                    if self._is_identifier():
+                        self._advance()
+                    if self._is_keyword("as"):
+                        self._advance()
+                        if self._is_identifier():
+                            self._advance()
                 if self._is_punctuation(','):
                     self._advance()
             self._expect_punctuation('}')
@@ -232,11 +243,17 @@ class ArkTSParser:
         """解析声明"""
         tok = self._current()
 
+        # abstract class/interface
+        is_abstract = False
+        if self._is_keyword("abstract"):
+            is_abstract = True
+            self._advance()
+
         # class/interface/struct/enum
         if self._is_keyword("class"):
-            return self._parse_class_declaration(decorators, is_exported)
+            return self._parse_class_declaration(decorators, is_exported, is_abstract=is_abstract)
         elif self._is_keyword("interface"):
-            return self._parse_class_declaration(decorators, is_exported, is_interface=True)
+            return self._parse_class_declaration(decorators, is_exported, is_interface=True, is_abstract=is_abstract)
         elif self._is_keyword("struct"):
             return self._parse_class_declaration(decorators, is_exported, is_struct=True)
         elif self._is_keyword("enum"):
@@ -263,7 +280,8 @@ class ArkTSParser:
         return None
 
     def _parse_class_declaration(self, decorators: List[str], is_exported: bool,
-                                  is_interface: bool = False, is_struct: bool = False) -> ClassNode:
+                                  is_interface: bool = False, is_struct: bool = False,
+                                  is_abstract: bool = False) -> ClassNode:
         """解析类声明"""
         start_tok = self._current()
         self._advance()  # skip 'class'/'interface'/'struct'
@@ -281,6 +299,36 @@ class ArkTSParser:
                 if self._is_identifier():
                     type_params.append(self._current().value)
                     self._advance()
+                
+                # 处理 extends 约束，如 <T extends SomeType>
+                if self._is_keyword("extends"):
+                    self._advance()
+                    # 跳过约束类型，直到遇到 , 或 > 或 =
+                    depth = 0
+                    while (self._current().type != TokenType.EOF and
+                           not (self._is_punctuation(',') and depth == 0) and
+                           not (self._is_punctuation('>') and depth == 0) and
+                           not (self._is_punctuation('=') and depth == 0)):
+                        if self._is_punctuation('<') or self._is_punctuation('{') or self._is_punctuation('('):
+                            depth += 1
+                        elif self._is_punctuation('>') or self._is_punctuation('}') or self._is_punctuation(')'):
+                            depth -= 1
+                        self._advance()
+                
+                # 处理默认值，如 <T = string>
+                if self._is_punctuation('='):
+                    self._advance()
+                    # 跳过默认类型，直到遇到 , 或 >
+                    depth = 0
+                    while (self._current().type != TokenType.EOF and
+                           not (self._is_punctuation(',') and depth == 0) and
+                           not (self._is_punctuation('>') and depth == 0)):
+                        if self._is_punctuation('<') or self._is_punctuation('{') or self._is_punctuation('('):
+                            depth += 1
+                        elif self._is_punctuation('>') or self._is_punctuation('}') or self._is_punctuation(')'):
+                            depth -= 1
+                        self._advance()
+                
                 if self._is_punctuation(','):
                     self._advance()
             self._expect_punctuation('>')
@@ -292,6 +340,19 @@ class ArkTSParser:
             while self._is_identifier():
                 extends_list.append(self._current().value)
                 self._advance()
+                # 跳过泛型参数 <...>
+                if self._is_punctuation('<'):
+                    self._advance()  # skip <
+                    depth = 1
+                    while depth > 0 and self._current().type != TokenType.EOF:
+                        if self._is_punctuation('<'):
+                            depth += 1
+                            self._advance()
+                        elif self._is_punctuation('>'):
+                            depth -= 1
+                            self._advance()
+                        else:
+                            self._advance()
                 if self._is_punctuation(','):
                     self._advance()
                 else:
@@ -304,6 +365,19 @@ class ArkTSParser:
             while self._is_identifier():
                 implements_list.append(self._current().value)
                 self._advance()
+                # 跳过泛型参数 <...>
+                if self._is_punctuation('<'):
+                    self._advance()  # skip <
+                    depth = 1
+                    while depth > 0 and self._current().type != TokenType.EOF:
+                        if self._is_punctuation('<'):
+                            depth += 1
+                            self._advance()
+                        elif self._is_punctuation('>'):
+                            depth -= 1
+                            self._advance()
+                        else:
+                            self._advance()
                 if self._is_punctuation(','):
                     self._advance()
                 else:
@@ -402,8 +476,17 @@ class ArkTSParser:
 
             # 泛型参数
             if self._is_punctuation('<'):
-                while not self._is_punctuation('>') and self._current().type != TokenType.EOF:
-                    self._advance()
+                self._advance()  # skip <
+                depth = 1
+                while depth > 0 and self._current().type != TokenType.EOF:
+                    if self._is_punctuation('<'):
+                        depth += 1
+                        self._advance()
+                    elif self._is_punctuation('>'):
+                        depth -= 1
+                        self._advance()
+                    else:
+                        self._advance()
 
             # 如果后面是 ( 则是方法
             if self._is_punctuation('('):
@@ -428,6 +511,16 @@ class ArkTSParser:
         """解析构造函数"""
         start_tok = self._current()
         self._advance()  # skip 'constructor'
+        # 跳过参数列表
+        if self._is_punctuation('('):
+            self._advance()
+            depth = 1
+            while depth > 0 and self._current().type != TokenType.EOF:
+                if self._is_punctuation('('):
+                    depth += 1
+                elif self._is_punctuation(')'):
+                    depth -= 1
+                self._advance()
         start_line, end_line = self._skip_block()
         return MethodNode(
             node_type="MethodDeclaration",
@@ -449,6 +542,16 @@ class ArkTSParser:
         if self._is_identifier():
             name = self._current().value
             self._advance()
+        # 跳过参数列表 (setter可能有参数)
+        if self._is_punctuation('('):
+            self._advance()
+            depth = 1
+            while depth > 0 and self._current().type != TokenType.EOF:
+                if self._is_punctuation('('):
+                    depth += 1
+                elif self._is_punctuation(')'):
+                    depth -= 1
+                self._advance()
         start_line, end_line = self._skip_block()
         return MethodNode(
             node_type="MethodDeclaration",
@@ -471,7 +574,21 @@ class ArkTSParser:
         while not self._is_punctuation(')') and self._current().type != TokenType.EOF:
             param_name = ""
             param_type = ""
-            if self._is_identifier():
+            is_rest = False  # 剩余参数标记
+            
+            # 处理剩余参数 ...args
+            if self._is_punctuation('.'):
+                # 检查是否是 ... (三个连续的点)
+                if self._pos + 2 < len(self._tokens):
+                    if (self._tokens[self._pos].value == '.' and 
+                        self._tokens[self._pos + 1].value == '.' and 
+                        self._tokens[self._pos + 2].value == '.'):
+                        is_rest = True
+                        self._advance()  # skip first .
+                        self._advance()  # skip second .
+                        self._advance()  # skip third .
+            
+            if self._is_identifier() or self._is_keyword("this"):
                 param_name = self._current().value
                 self._advance()
             if self._is_punctuation(':'):
@@ -481,14 +598,23 @@ class ArkTSParser:
                 while (self._current().type != TokenType.EOF and
                        not (self._is_punctuation(',') and depth == 0) and
                        not (self._is_punctuation(')') and depth == 0)):
-                    if self._is_punctuation('<'):
+                    if self._is_punctuation('<') or self._is_punctuation('('):
                         depth += 1
-                    elif self._is_punctuation('>'):
+                    elif self._is_punctuation('>') or self._is_punctuation(')'):
                         depth -= 1
                     self._advance()
                 param_type = "param"  # 简化
             if param_name:
-                parameters.append({"name": param_name, "type": param_type})
+                param_info = {"name": param_name, "type": param_type}
+                if is_rest:
+                    param_info["rest"] = True
+                parameters.append(param_info)
+            else:
+                # 无法识别的参数token，跳过以避免死循环
+                if (not self._is_punctuation(',') and 
+                    not self._is_punctuation(')') and
+                    self._current().type != TokenType.EOF):
+                    self._advance()
             if self._is_punctuation(','):
                 self._advance()
 
@@ -498,10 +624,21 @@ class ArkTSParser:
         return_type = ""
         if self._is_punctuation(':'):
             self._advance()
-            # 简化：读取到 { 或 ; 或 =>
+            # 读取返回类型，需要处理嵌套的 < > { } ( )
+            depth = 0
             while (self._current().type != TokenType.EOF and
-                   not self._is_punctuation('{') and
-                   not self._is_punctuation(';')):
+                   not self._is_punctuation('{') and depth == 0 and
+                   not self._is_punctuation(';') and depth == 0 and
+                   not self._is_punctuation('}') and depth == 0):
+                # 检查是否遇到下一个成员（标识符后跟 ( 或 :）
+                if (depth == 0 and self._is_identifier() and 
+                    self._pos + 1 < len(self._tokens) and
+                    self._tokens[self._pos + 1].value in ('(', ':')):
+                    break
+                if self._is_punctuation('<') or self._is_punctuation('(') or self._is_punctuation('{'):
+                    depth += 1
+                elif self._is_punctuation('>') or self._is_punctuation(')') or self._is_punctuation('}'):
+                    depth -= 1
                 self._advance()
 
         # 方法体
@@ -602,17 +739,65 @@ class ArkTSParser:
 
         # 泛型参数
         if self._is_punctuation('<'):
-            while not self._is_punctuation('>') and self._current().type != TokenType.EOF:
-                self._advance()
+            self._advance()  # skip <
+            depth = 1
+            while depth > 0 and self._current().type != TokenType.EOF:
+                if self._is_punctuation('<'):
+                    depth += 1
+                    self._advance()
+                elif self._is_punctuation('>'):
+                    depth -= 1
+                    self._advance()
+                else:
+                    self._advance()
 
         # 参数
         parameters = []
         if self._is_punctuation('('):
             self._advance()
             while not self._is_punctuation(')') and self._current().type != TokenType.EOF:
-                if self._is_identifier():
-                    parameters.append({"name": self._current().value, "type": ""})
+                # 处理剩余参数
+                is_rest = False
+                if self._is_punctuation('.'):
+                    if (self._pos + 2 < len(self._tokens) and
+                        self._tokens[self._pos].value == '.' and
+                        self._tokens[self._pos + 1].value == '.' and
+                        self._tokens[self._pos + 2].value == '.'):
+                        is_rest = True
+                        self._advance()
+                        self._advance()
+                        self._advance()
+                
+                param_name = ""
+                if self._is_identifier() or self._is_keyword("this"):
+                    param_name = self._current().value
                     self._advance()
+                
+                # 跳过类型注解
+                if self._is_punctuation(':'):
+                    self._advance()
+                    depth = 0
+                    while (self._current().type != TokenType.EOF and
+                           not (self._is_punctuation(',') and depth == 0) and
+                           not (self._is_punctuation(')') and depth == 0)):
+                        if self._is_punctuation('<') or self._is_punctuation('('):
+                            depth += 1
+                        elif self._is_punctuation('>') or self._is_punctuation(')'):
+                            depth -= 1
+                        self._advance()
+                
+                if param_name:
+                    param_info = {"name": param_name, "type": ""}
+                    if is_rest:
+                        param_info["rest"] = True
+                    parameters.append(param_info)
+                else:
+                    # 跳过无法识别的token
+                    if (not self._is_punctuation(',') and
+                        not self._is_punctuation(')') and
+                        self._current().type != TokenType.EOF):
+                        self._advance()
+                
                 if self._is_punctuation(','):
                     self._advance()
             self._expect_punctuation(')')
@@ -621,8 +806,13 @@ class ArkTSParser:
         return_type = ""
         if self._is_punctuation(':'):
             self._advance()
+            depth = 0
             while (self._current().type != TokenType.EOF and
-                   not self._is_punctuation('{')):
+                   not (self._is_punctuation('{') and depth == 0)):
+                if self._is_punctuation('<') or self._is_punctuation('(') or self._is_punctuation('{'):
+                    depth += 1
+                elif self._is_punctuation('>') or self._is_punctuation(')') or self._is_punctuation('}'):
+                    depth -= 1
                 self._advance()
 
         # 函数体
@@ -660,7 +850,6 @@ class ArkTSParser:
             name=name,
             start_line=start_tok.line,
             end_line=end_line,
-            decorators=decorators,
         )
 
     def _parse_enum_declaration(self, decorators, is_exported) -> ClassNode:
