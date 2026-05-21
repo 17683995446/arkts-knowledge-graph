@@ -98,7 +98,21 @@ class ArkTSLexer:
                 self._read_number()
             elif ch.isalpha() or ch == '_' or ch == '$':
                 self._read_identifier()
-            elif ch in '{}()[];,.:?':
+            elif ch == '.':
+                # 修复F: .5 小数 - 当点号后面是数字时，按数字处理
+                if self._pos + 1 < len(self._source) and self._source[self._pos + 1].isdigit():
+                    self._read_number()
+                elif self._pos + 2 < len(self._source) and self._source[self._pos:self._pos+3] == '...':
+                    # 修复E: ... 处理 - 跳过三个点，不生成token（由调用方处理）
+                    self._pos += 3
+                    self._column += 3
+                elif self._pos + 1 < len(self._source) and self._source[self._pos:self._pos+2] == '?.':
+                    # 修复E: ?. 处理 - 跳过，不生成token
+                    self._pos += 2
+                    self._column += 2
+                else:
+                    self._read_punctuation()
+            elif ch in '{}()[];,?:':
                 self._read_punctuation()
             elif ch in '+-*/%=!<>&|^~':
                 self._read_operator()
@@ -143,6 +157,8 @@ class ArkTSLexer:
                 self._line += 1
                 self._column = 1
             self._pos += 1
+        # 修复I: 块注释未闭合时，安全跳到末尾
+        self._pos = len(self._source)
 
     def _read_decorator(self):
         """读取装饰器 @Component 等"""
@@ -186,9 +202,16 @@ class ArkTSLexer:
         chars = []
         while self._pos < len(self._source) and self._source[self._pos] != quote:
             if self._source[self._pos] == '\\':
-                self._pos += 2
-                self._column += 2
-                chars.append(self._source[self._pos - 2:self._pos])  # 保留转义序列
+                # 修复H: 转义越界检查
+                if self._pos + 1 < len(self._source):
+                    self._pos += 2
+                    self._column += 2
+                    chars.append(self._source[self._pos - 2:self._pos])  # 保留转义序列
+                else:
+                    chars.append(self._source[self._pos])
+                    self._pos += 1
+                    self._column += 1
+                    break
             else:
                 ch = self._source[self._pos]
                 if ch == '\n':
@@ -245,13 +268,32 @@ class ArkTSLexer:
         self._pos += 1
         self._column += 1
         self._tokens.append(Token(TokenType.PUNCTUATION, value, start_line, start_col, self._line, self._column))
+        # 修复A: 返回True，避免隐式返回None导致后续错误调用_read_operator()
+        return True
+
+    # 修复D: 有效运算符集合，用于最大匹配策略
+    VALID_OPERATORS = {
+        '>>>=', '>>=', '<<=', '**=', '&&=', '||=', '??=',
+        '===', '!==', '>>>', '<<=', '>>=',
+        '==', '!=', '<=', '>=', '&&', '||', '??',
+        '**', '++', '--', '=>', '<<', '>>',
+        '+', '-', '*', '/', '%', '=', '!', '<', '>', '&', '|', '^', '~', '?',
+    }
 
     def _read_operator(self):
         """读取运算符"""
         start_line, start_col = self._line, self._column
-        start = self._pos
-        while self._pos < len(self._source) and self._source[self._pos] in '+-*/%=!<>&|^~?':
-            self._pos += 1
-            self._column += 1
-        value = self._source[start:self._pos]
-        self._tokens.append(Token(TokenType.OPERATOR, value, start_line, start_col, self._line, self._column))
+        # 修复D: 使用最大匹配策略，从最长到最短尝试匹配
+        best_match = ""
+        best_len = 0
+        for op in sorted(self.VALID_OPERATORS, key=len, reverse=True):
+            if self._source[self._pos:self._pos+len(op)] == op:
+                if len(op) > best_len:
+                    best_match = op
+                    best_len = len(op)
+        if best_match:
+            self._pos += best_len
+            self._column += best_len
+            # 修复B: 空token防御
+            if best_match:
+                self._tokens.append(Token(TokenType.OPERATOR, best_match, start_line, start_col, self._line, self._column))

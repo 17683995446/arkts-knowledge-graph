@@ -108,9 +108,10 @@ class ArkTSFileParser:
         result.parse_time_ms = (time.time() - start_time) * 1000
         return result
 
-    def _compute_hash(self, content: str) -> str:
-        """计算文件内容的SHA256哈希"""
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()
+    def _compute_hash(self, content: str) -> bytes:
+        """计算文件内容的SHA256哈希（返回bytes）"""
+        # 修复X: 返回bytes类型，与数据库BLOB字段匹配
+        return hashlib.sha256(content.encode('utf-8')).digest()
 
     def _extract_classes(self, file_node: FileNode, file_path: str) -> List[Dict]:
         """提取所有类/接口/枚举"""

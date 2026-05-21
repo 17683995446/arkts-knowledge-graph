@@ -57,6 +57,9 @@ class ArkTSParser:
             if self._is_keyword("export"):
                 self._advance()
                 is_exported = True
+                # 修复O: 跳过 export default 语法中的 default 关键字
+                if self._is_keyword("default"):
+                    self._advance()
 
             # 解析各种声明
             node = self._parse_declaration(decorators, is_exported)
@@ -123,10 +126,16 @@ class ArkTSParser:
         self._advance()  # skip {
         depth = 1
         while depth > 0 and self._current().type != TokenType.EOF:
+            # 修复K: 遇到 STRING token 时直接 advance 跳过
+            if self._current().type == TokenType.STRING:
+                self._advance()
+                continue
             if self._is_punctuation('{'):
                 depth += 1
             elif self._is_punctuation('}'):
-                depth -= 1
+                # 修复M: depth 下限保护
+                if depth > 0:
+                    depth -= 1
             self._advance()
         
         # 处理链式调用：.methodName(...)
@@ -144,16 +153,26 @@ class ArkTSParser:
                     if self._is_punctuation('('):
                         paren_depth += 1
                     elif self._is_punctuation(')'):
-                        paren_depth -= 1
+                        if paren_depth > 0:
+                            paren_depth -= 1
                     elif self._is_punctuation('{'):
                         # 处理对象字面量参数
                         self._advance()
                         brace_depth = 1
                         while brace_depth > 0 and self._current().type != TokenType.EOF:
+                            # 修复K: 字符串token跳过
+                            if self._current().type == TokenType.STRING:
+                                self._advance()
+                                continue
                             if self._is_punctuation('{'):
                                 brace_depth += 1
                             elif self._is_punctuation('}'):
-                                brace_depth -= 1
+                                # 修复L: 内层 brace_depth 循环在 depth==0 时 break
+                                if brace_depth > 0:
+                                    brace_depth -= 1
+                                if brace_depth == 0:
+                                    self._advance()
+                                    break
                             self._advance()
                         continue
                     self._advance()
@@ -177,6 +196,10 @@ class ArkTSParser:
         start_tok = self._current()
         self._advance()  # skip 'import'
 
+        # 修复N: 跳过 import type 语法中的 type 关键字
+        if self._is_keyword("type"):
+            self._advance()
+
         is_default = False
         imported_names = []
         import_path = ""
@@ -191,7 +214,8 @@ class ArkTSParser:
         elif self._is_punctuation('{'):
             self._advance()
             while not self._is_punctuation('}') and self._current().type != TokenType.EOF:
-                if self._is_identifier():
+                # 修复J: 允许关键字名称（如 Component, State 等），避免无限循环
+                if self._is_identifier() or self._current().type == TokenType.KEYWORD:
                     imported_names.append(self._current().value)
                     self._advance()
                     # 处理 as 别名: import { D as DD }
@@ -712,6 +736,8 @@ class ArkTSParser:
             while (self._current().type != TokenType.EOF and
                    not (self._is_punctuation('=') or (self._current().type == TokenType.OPERATOR and self._current().value == '=')) and
                    not self._is_punctuation(';') and
+                   # 修复P: 遇到 } 时停止类型注解
+                   not self._is_punctuation('}') and
                    not (depth == 0 and self._current().type == TokenType.KEYWORD and 
                         self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly'))):
                 # BUG-37修复：深度计数处理泛型
@@ -735,7 +761,9 @@ class ArkTSParser:
                    not (self._is_punctuation(';') and depth == 0)):
                 # 检查是否遇到下一个成员的关键字
                 if (depth == 0 and self._current().type == TokenType.KEYWORD and
-                    self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly', 'constructor', 'get', 'set')):
+                    self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly', 'constructor', 'get', 'set',
+                                              # 修复R: 添加 import 和 abstract 关键字检查
+                                              'import', 'abstract')):
                     break
                 # BUG-37修复：depth==0时遇到标识符+括号(方法声明)也停止
                 # BUG-H4修复：在赋值上下文中不因identifier+(停止（避免截断函数调用默认值getName()）

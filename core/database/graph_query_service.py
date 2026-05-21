@@ -156,11 +156,15 @@ class GraphQueryService:
     # ==================== 调用图查询 ====================
 
     def get_call_graph(self, class_id: int, depth: int = 1) -> Dict[str, Any]:
-        """获取类的调用图（BFS遍历）"""
+        """获取类的调用图（BFS多层遍历）"""
         methods = self.get_class_methods(class_id)
         nodes = []
         edges = []
         visited_method_ids = set()
+
+        # 修复U: 实现真正的 BFS 多层遍历
+        from collections import deque
+        queue = deque()
 
         for method in methods:
             nodes.append({
@@ -170,12 +174,18 @@ class GraphQueryService:
                 "class_name": method.get("class_name", ""),
             })
             visited_method_ids.add(method["id"])
+            queue.append((method["id"], 0))
+
+        while queue:
+            current_id, current_depth = queue.popleft()
+            if current_depth >= depth:
+                continue
 
             # 获取调用关系
-            callees = self.get_method_callees(method["id"])
+            callees = self.get_method_callees(current_id)
             for callee in callees:
                 edges.append({
-                    "source": method["id"],
+                    "source": current_id,
                     "target": callee["id"],
                     "type": "calls"
                 })
@@ -187,6 +197,7 @@ class GraphQueryService:
                         "class_name": callee.get("class_name", ""),
                     })
                     visited_method_ids.add(callee["id"])
+                    queue.append((callee["id"], current_depth + 1))
 
         return {"nodes": nodes, "edges": edges}
 

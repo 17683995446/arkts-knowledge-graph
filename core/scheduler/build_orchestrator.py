@@ -199,6 +199,28 @@ class BuildOrchestrator:
     def _write_parse_results(self, parse_results: List[Dict],
                               scanned_files: List[ScannedFile]) -> None:
         """将解析结果批量写入数据库"""
+        # 修复W: 事务保护 - BEGIN/COMMIT/ROLLBACK
+        conn_mgr = get_connection_manager()
+        try:
+            with conn_mgr.get_connection() as conn:
+                conn.execute("BEGIN")
+            
+            self._do_write_parse_results(parse_results, scanned_files)
+            
+            with conn_mgr.get_connection() as conn:
+                conn.execute("COMMIT")
+        except Exception as e:
+            logger.error(f"写入解析结果失败，执行ROLLBACK: {e}")
+            try:
+                with conn_mgr.get_connection() as conn:
+                    conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+    def _do_write_parse_results(self, parse_results: List[Dict],
+                              scanned_files: List[ScannedFile]) -> None:
+        """实际执行写入解析结果（在事务内）"""
         # 建立路径→文件信息的映射
         scanned_map = {f.file_path: f for f in scanned_files}
 

@@ -98,8 +98,8 @@ class BatchWriter:
                 conn.executemany(sql, values)
             return []
         else:
-            # 实体表使用 RETURNING id 获取插入的ID（SQLite 3.35+）
-            sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) RETURNING id"
+            # 修复S: 实体表使用 INSERT OR REPLACE 避免UNIQUE约束冲突
+            sql = f"INSERT OR REPLACE INTO {table_name} ({col_names}) VALUES ({placeholders}) RETURNING id"
             inserted_ids = []
             with conn_mgr.get_connection() as conn:
                 for vals in values:
