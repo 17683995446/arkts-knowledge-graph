@@ -110,7 +110,7 @@ class ArkTSFileParser:
 
     def _compute_hash(self, content: str) -> str:
         """计算文件内容的SHA256哈希"""
-        return hashlib.sha256(content.encode('utf-8')).digest()
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
     def _extract_classes(self, file_node: FileNode, file_path: str) -> List[Dict]:
         """提取所有类/接口/枚举"""

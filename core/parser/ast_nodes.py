@@ -107,6 +107,7 @@ class MethodNode(ASTNode):
     is_setter: bool = False
     is_constructor: bool = False
     is_arrow: bool = False
+    is_abstract: bool = False
     body_text: str = ""
 
 

@@ -203,6 +203,7 @@ class ArkTSParser:
                     # import { type Foo } 中的 type 关键字
                     self._advance()
                     if self._is_identifier():
+                        imported_names.append(self._current().value)
                         self._advance()
                     if self._is_keyword("as"):
                         self._advance()
@@ -344,8 +345,17 @@ class ArkTSParser:
         if self._is_keyword("extends"):
             self._advance()
             while self._is_identifier():
-                extends_list.append(self._current().value)
+                # BUG-M1修复：拼接点号路径，如 a.b.c.Base
+                full_name = self._current().value
                 self._advance()
+                while self._is_punctuation('.'):
+                    self._advance()  # skip .
+                    if self._is_identifier():
+                        full_name += '.' + self._current().value
+                        self._advance()
+                    else:
+                        break
+                extends_list.append(full_name)
                 # 跳过泛型参数 <...>
                 if self._is_punctuation('<'):
                     self._advance()  # skip <
@@ -441,6 +451,7 @@ class ArkTSParser:
         is_static = False
         is_readonly = False
         is_override = False
+        is_abstract = False
 
         while True:
             if self._is_keyword("private"):
@@ -461,6 +472,7 @@ class ArkTSParser:
                 is_override = True
                 self._advance()
             elif self._is_keyword("abstract"):
+                is_abstract = True
                 self._advance()
             else:
                 break
@@ -481,7 +493,7 @@ class ArkTSParser:
 
         # function keyword
         if self._is_keyword("function"):
-            return self._parse_function_declaration(decorators, False, is_static, is_async, is_private, is_protected)
+            return self._parse_function_declaration(decorators, False, is_static, is_async, is_private, is_protected, is_abstract=is_abstract)
 
         # 方法或属性：以标识符开头
         if self._is_identifier():
@@ -497,6 +509,9 @@ class ArkTSParser:
                     if self._is_punctuation('<'):
                         depth += 1
                         self._advance()
+                    elif (self._current().type == TokenType.OPERATOR and self._current().value == '>>'):
+                        depth -= 2
+                        self._advance()
                     elif self._is_punctuation('>'):
                         depth -= 1
                         self._advance()
@@ -506,7 +521,7 @@ class ArkTSParser:
             # 如果后面是 ( 则是方法
             if self._is_punctuation('('):
                 return self._parse_method_parameters(
-                    name, name_tok.line, decorators, is_static, is_async, is_private, is_protected, is_override
+                    name, name_tok.line, decorators, is_static, is_async, is_private, is_protected, is_override, is_abstract
                 )
 
             # 如果后面是 ? 也可能是属性
@@ -588,7 +603,7 @@ class ArkTSParser:
         )
 
     def _parse_method_parameters(self, name, start_line, decorators, is_static, is_async,
-                                  is_private, is_protected, is_override) -> MethodNode:
+                                  is_private, is_protected, is_override, is_abstract=False) -> MethodNode:
         """解析方法参数和方法体"""
         parameters = []
         self._expect_punctuation('(')
@@ -677,6 +692,7 @@ class ArkTSParser:
             is_private=is_private,
             is_protected=is_protected,
             is_override=is_override,
+            is_abstract=is_abstract,
             parameters=parameters,
             return_type=return_type,
         )
@@ -722,11 +738,14 @@ class ArkTSParser:
                     self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly', 'constructor', 'get', 'set')):
                     break
                 # BUG-37修复：depth==0时遇到标识符+括号(方法声明)也停止
-                # 但排除 new 关键字后面的标识符（构造调用）
-                if (depth == 0 and self._current().type == TokenType.IDENTIFIER and
+                # BUG-H4修复：在赋值上下文中不因identifier+(停止（避免截断函数调用默认值getName()）
+                # 仅在非赋值上下文(val_parts为空且不在=后面)时停止
+                if (depth == 0 and len(val_parts) == 0 and
+                    self._current().type == TokenType.IDENTIFIER and
                     self._pos + 1 < len(self._tokens) and self._tokens[self._pos + 1].type == TokenType.PUNCTUATION and
                     self._tokens[self._pos + 1].value == '(' and
-                    not (len(val_parts) > 0 and val_parts[-1] == 'new')):
+                    self._pos + 2 < len(self._tokens) and self._tokens[self._pos + 2].type == TokenType.PUNCTUATION and
+                    self._tokens[self._pos + 2].value in (':', ',')):
                     break
                 if self._is_punctuation('{') or self._is_punctuation('(') or self._is_punctuation('['):
                     depth += 1
@@ -788,6 +807,9 @@ class ArkTSParser:
             while depth > 0 and self._current().type != TokenType.EOF:
                 if self._is_punctuation('<'):
                     depth += 1
+                    self._advance()
+                elif (self._current().type == TokenType.OPERATOR and self._current().value == '>>'):
+                    depth -= 2
                     self._advance()
                 elif self._is_punctuation('>'):
                     depth -= 1
@@ -1059,6 +1081,13 @@ class ArkTSParser:
         if next_pos < len(self._tokens):
             if (self._tokens[next_pos].type == TokenType.OPERATOR and
                     self._tokens[next_pos].value == '=>'):
+                return True
+            # BUG-H5修复：检查单参数无括号箭头函数模式: = identifier =>
+            # 例如: const fn = x => x + 1
+            if (self._tokens[next_pos].type == TokenType.IDENTIFIER and
+                    next_pos + 1 < len(self._tokens) and
+                    self._tokens[next_pos + 1].type == TokenType.OPERATOR and
+                    self._tokens[next_pos + 1].value == '=>'):
                 return True
             # 也检查跳过参数列表 (...) 后是否有 =>
             # 例如: = (...) => { ... }
