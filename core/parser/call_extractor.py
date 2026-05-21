@@ -102,14 +102,29 @@ class CallExtractor:
         calls = []
         caller_name = method_node.name
 
-        # 获取方法体文本
-        start = max(0, method_node.start_line - 1)
+        # 获取方法体文本（排除方法签名行，避免将方法名误报为调用）
+        start = max(0, method_node.start_line)  # start_line is 1-based
         end = min(len(self._source_lines), method_node.end_line)
         body_lines = self._source_lines[start:end]
-        body_text = "\n".join(body_lines)
+
+        # 查找方法体的起始位置（跳过签名行）
+        # 签名行包含方法名和 '('，找到 '{' 开始的行作为方法体起始
+        body_start = 0
+        for i, line in enumerate(body_lines):
+            if '{' in line:
+                # 方法体从 '{' 所在行开始，但需要排除签名行本身
+                # 如果 '{' 和 '(' 在同一行，说明是签名行，方法体从下一行开始
+                if '(' in line:
+                    body_start = i + 1
+                else:
+                    body_start = i
+                break
+
+        body_text = "\n".join(body_lines[body_start:])
+        base_line = start + body_start + 1  # 转换为1-based行号
 
         # 提取各种调用模式
-        callees = self._extract_callees_from_text(body_text, start + 1)
+        callees = self._extract_callees_from_text(body_text, base_line)
 
         for callee_info in callees:
             calls.append(CallRelation(

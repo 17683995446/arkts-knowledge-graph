@@ -49,7 +49,9 @@ class ArkTSParser:
 
             # 解析导入
             if self._is_keyword("import"):
-                file_node.imports.append(self._parse_import())
+                import_node = self._parse_import()
+                file_node.imports.append(import_node)
+                file_node.children.append(import_node)
                 continue
 
             # 解析导出
@@ -256,7 +258,7 @@ class ArkTSParser:
             self._advance()
 
         return ImportNode(
-            node_type="Import",
+            node_type="ImportDeclaration",
             start_line=start_tok.line,
             end_line=self._current().line,
             import_path=import_path,
@@ -686,12 +688,16 @@ class ArkTSParser:
             self._advance()
             # 读取返回类型，需要处理嵌套的 < > { } ( )
             depth = 0
-            while (self._current().type != TokenType.EOF and
-                   not self._is_punctuation('{') and depth == 0 and
-                   not self._is_punctuation(';') and depth == 0 and
-                   not self._is_punctuation('}') and depth == 0):
+            while self._current().type != TokenType.EOF:
+                # depth==0 时遇到终止符才退出
+                if depth == 0 and self._is_punctuation('{'):
+                    break
+                if depth == 0 and self._is_punctuation(';'):
+                    break
+                if depth == 0 and self._is_punctuation('}'):
+                    break
                 # 检查是否遇到下一个成员（标识符后跟 ( 或 :）
-                if (depth == 0 and self._is_identifier() and 
+                if (depth == 0 and self._is_identifier() and
                     self._pos + 1 < len(self._tokens) and
                     self._tokens[self._pos + 1].value in ('(', ':')):
                     break
@@ -739,7 +745,10 @@ class ArkTSParser:
                    # 修复P: 遇到 } 时停止类型注解
                    not self._is_punctuation('}') and
                    not (depth == 0 and self._current().type == TokenType.KEYWORD and 
-                        self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly'))):
+                        self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly')) and
+                   # 修复：depth==0时遇到换行后的标识符停止（无分号属性声明）
+                   not (depth == 0 and self._current().type == TokenType.IDENTIFIER and
+                        type_parts and self._current().line > start_line)):
                 # BUG-37修复：深度计数处理泛型
                 if self._is_punctuation('<') or (self._current().type == TokenType.OPERATOR and self._current().value == '<'):
                     depth += 1

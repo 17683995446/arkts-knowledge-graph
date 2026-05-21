@@ -102,18 +102,12 @@ class ArkTSLexer:
                 # 修复F: .5 小数 - 当点号后面是数字时，按数字处理
                 if self._pos + 1 < len(self._source) and self._source[self._pos + 1].isdigit():
                     self._read_number()
-                elif self._pos + 2 < len(self._source) and self._source[self._pos:self._pos+3] == '...':
-                    # 修复E: ... 处理 - 跳过三个点，不生成token（由调用方处理）
-                    self._pos += 3
-                    self._column += 3
-                elif self._pos + 1 < len(self._source) and self._source[self._pos:self._pos+2] == '?.':
-                    # 修复E: ?. 处理 - 跳过，不生成token
-                    self._pos += 2
-                    self._column += 2
-                else:
-                    self._read_punctuation()
+                elif not self._read_punctuation():
+                    # _read_punctuation 返回 None 表示 ... 等需要由 _read_operator 处理
+                    self._read_operator()
             elif ch in '{}()[];,?:':
-                self._read_punctuation()
+                if not self._read_punctuation():
+                    self._read_operator()
             elif ch in '+-*/%=!<>&|^~':
                 self._read_operator()
             else:
@@ -232,9 +226,36 @@ class ArkTSLexer:
         start_line, start_col = self._line, self._column
         start_pos = self._pos  # BUG-39修复：记录起始位置
         has_dot = False  # BUG-11修复：标记是否已遇到小数点，防止 1.2.3 被匹配为一个token
+        has_exponent = False  # 科学计数法标记
+
+        # 处理进制前缀: 0x, 0X, 0b, 0B, 0o, 0O
+        if (self._pos + 1 < len(self._source) and self._source[self._pos] == '0'
+                and self._source[self._pos + 1] in 'xXbBoO'):
+            prefix = self._source[self._pos:self._pos + 2]
+            self._pos += 2
+            self._column += 2
+            # 读取进制前缀后的数字
+            if prefix[1] in 'xX':
+                # 十六进制: 0-9, a-f, A-F
+                while self._pos < len(self._source) and (self._source[self._pos] in '0123456789abcdefABCDEF'):
+                    self._pos += 1
+                    self._column += 1
+            elif prefix[1] in 'bB':
+                # 二进制: 0-1
+                while self._pos < len(self._source) and self._source[self._pos] in '01':
+                    self._pos += 1
+                    self._column += 1
+            elif prefix[1] in 'oO':
+                # 八进制: 0-7
+                while self._pos < len(self._source) and self._source[self._pos] in '01234567':
+                    self._pos += 1
+                    self._column += 1
+            number_value = self._source[start_pos:self._pos]
+            self._tokens.append(Token(TokenType.NUMBER, number_value, start_line, start_col, self._line, self._column))
+            return
+
         while self._pos < len(self._source):
             ch = self._source[self._pos]
-            # BUG-33修复：只允许数字和 .（且仅一个小数点），不再使用 isalnum() 避免匹配 123abc
             if ch.isdigit():
                 self._pos += 1
                 self._column += 1
@@ -242,9 +263,16 @@ class ArkTSLexer:
                 has_dot = True
                 self._pos += 1
                 self._column += 1
+            elif ch in 'eE' and not has_exponent:
+                # 科学计数法: e/E 后面可以跟 +/-
+                has_exponent = True
+                self._pos += 1
+                self._column += 1
+                if self._pos < len(self._source) and self._source[self._pos] in '+-':
+                    self._pos += 1
+                    self._column += 1
             else:
                 break
-        # BUG-39修复：保存数字实际值
         number_value = self._source[start_pos:self._pos]
         self._tokens.append(Token(TokenType.NUMBER, number_value, start_line, start_col, self._line, self._column))
 
@@ -262,22 +290,30 @@ class ArkTSLexer:
             self._tokens.append(Token(TokenType.IDENTIFIER, value, start_line, start_col, self._line, self._column))
 
     def _read_punctuation(self):
-        """读取标点符号"""
+        """读取标点符号，返回True表示已处理，返回None表示需要由_read_operator处理"""
         start_line, start_col = self._line, self._column
         value = self._source[self._pos]
+        # ?? 应该作为运算符处理
+        if value == '?' and self._pos + 1 < len(self._source) and self._source[self._pos + 1] == '?':
+            return None
+        # ?. 可选链应该作为运算符处理
+        if value == '?' and self._pos + 1 < len(self._source) and self._source[self._pos + 1] == '.':
+            return None
+        # ... 展开运算符应该作为运算符处理
+        if value == '.' and self._pos + 2 < len(self._source) and self._source[self._pos + 1] == '.' and self._source[self._pos + 2] == '.':
+            return None
         self._pos += 1
         self._column += 1
         self._tokens.append(Token(TokenType.PUNCTUATION, value, start_line, start_col, self._line, self._column))
-        # 修复A: 返回True，避免隐式返回None导致后续错误调用_read_operator()
         return True
 
     # 修复D: 有效运算符集合，用于最大匹配策略
     VALID_OPERATORS = {
         '>>>=', '>>=', '<<=', '**=', '&&=', '||=', '??=',
         '===', '!==', '>>>', '<<=', '>>=',
-        '==', '!=', '<=', '>=', '&&', '||', '??',
+        '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '...',
         '**', '++', '--', '=>', '<<', '>>',
-        '+', '-', '*', '/', '%', '=', '!', '<', '>', '&', '|', '^', '~', '?',
+        '+', '-', '*', '/', '%', '=', '!', '<', '>', '&', '|', '^', '~', '?', '.',
     }
 
     def _read_operator(self):
