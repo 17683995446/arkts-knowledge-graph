@@ -3,6 +3,7 @@
 协调扫描、解析、写入的完整构建流程
 """
 import os
+import sqlite3
 import time
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -199,28 +200,71 @@ class BuildOrchestrator:
     def _write_parse_results(self, parse_results: List[Dict],
                               scanned_files: List[ScannedFile]) -> None:
         """将解析结果批量写入数据库"""
-        # 修复W: 事务保护 - BEGIN/COMMIT/ROLLBACK
+        # 修复W/BUG-7: 事务跨连接失效 - 使用同一个连接执行 BEGIN/写入/COMMIT
         conn_mgr = get_connection_manager()
+        conn = sqlite3.connect(conn_mgr._db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.row_factory = sqlite3.Row
         try:
-            with conn_mgr.get_connection() as conn:
-                conn.execute("BEGIN")
-            
-            self._do_write_parse_results(parse_results, scanned_files)
-            
-            with conn_mgr.get_connection() as conn:
-                conn.execute("COMMIT")
+            conn.execute("BEGIN")
+            self._do_write_parse_results_with_conn(parse_results, scanned_files, conn)
+            conn.execute("COMMIT")
         except Exception as e:
             logger.error(f"写入解析结果失败，执行ROLLBACK: {e}")
             try:
-                with conn_mgr.get_connection() as conn:
-                    conn.execute("ROLLBACK")
+                conn.execute("ROLLBACK")
             except Exception:
                 pass
             raise
+        finally:
+            conn.close()
 
     def _do_write_parse_results(self, parse_results: List[Dict],
                               scanned_files: List[ScannedFile]) -> None:
         """实际执行写入解析结果（在事务内）"""
+        conn_mgr = get_connection_manager()
+        conn = conn_mgr.get_connection().__enter__()
+        try:
+            self._do_write_parse_results_with_conn(parse_results, scanned_files, conn)
+        finally:
+            conn.close()
+
+    def _do_write_parse_results_with_conn(self, parse_results: List[Dict],
+                              scanned_files: List[ScannedFile], conn) -> None:
+        """实际执行写入解析结果（使用指定连接，在事务内）"""
+        def execute_query(sql, params=()):
+            cursor = conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+        def execute_update(sql, params=()):
+            cursor = conn.execute(sql, params)
+            return cursor.rowcount
+
+        def write_batch(table_name, records):
+            """直接在指定连接上执行批量写入"""
+            if not records:
+                return []
+            columns = list(records[0].keys())
+            placeholders = ", ".join(["?"] * len(columns))
+            col_names = ", ".join(columns)
+            values = [tuple(r.get(c) for c in columns) for r in records]
+            relation_tables = {'calls', 'components', 'imports', 'inheritance', 'build_metadata'}
+            if table_name in relation_tables:
+                sql = f"INSERT OR IGNORE INTO {table_name} ({col_names}) VALUES ({placeholders})"
+                conn.executemany(sql, values)
+                return []
+            else:
+                sql = f"INSERT OR REPLACE INTO {table_name} ({col_names}) VALUES ({placeholders}) RETURNING id"
+                inserted_ids = []
+                for vals in values:
+                    cursor = conn.execute(sql, vals)
+                    row = cursor.fetchone()
+                    if row:
+                        inserted_ids.append(row[0])
+                return inserted_ids
+
         # 建立路径→文件信息的映射
         scanned_map = {f.file_path: f for f in scanned_files}
 
@@ -229,11 +273,30 @@ class BuildOrchestrator:
         class_id_map = {}     # (file_path, class_name) -> class_id
         method_id_map = {}    # (file_path, class_name, method_name) -> method_id
 
+        # 批量写入缓冲区
+        buffers = {}
+
+        def add_record(table_name, record):
+            if table_name not in buffers:
+                buffers[table_name] = []
+            buffers[table_name].append(record)
+
+        def flush_table(table_name):
+            if table_name not in buffers or not buffers[table_name]:
+                return []
+            records = buffers[table_name]
+            buffers[table_name] = []
+            return write_batch(table_name, records)
+
+        def flush_all():
+            for table_name in list(buffers.keys()):
+                flush_table(table_name)
+
         # 1. 写入文件表
         # BUG-C修复: 增量构建时文件可能已存在，先删除旧记录避免UNIQUE约束冲突
         for pr in parse_results:
             file_path = pr["file_path"]
-            self._conn_mgr.execute_update("DELETE FROM files WHERE path = ?", (file_path,))
+            execute_update("DELETE FROM files WHERE path = ?", (file_path,))
 
         for pr in parse_results:
             file_path = pr["file_path"]
@@ -241,21 +304,21 @@ class BuildOrchestrator:
             if not scanned:
                 continue
 
-            file_id = self._bw.add_record("files", {
+            add_record("files", {
                 "path": file_path,
                 "hash": scanned.file_hash,
                 "line_count": scanned.line_count,
                 "language": "arkts",
                 "last_scanned": time.time(),
             })
-            file_id_map[file_path] = file_id
+            file_id_map[file_path] = 0  # placeholder
 
-        self._bw.flush_table("files")
+        flush_table("files")
 
         # 获取实际分配的ID
         for pr in parse_results:
             file_path = pr["file_path"]
-            rows = self._conn_mgr.execute_query(
+            rows = execute_query(
                 "SELECT id FROM files WHERE path = ?", (file_path,)
             )
             if rows:
@@ -269,7 +332,7 @@ class BuildOrchestrator:
                 continue
 
             for cls in pr.get("classes", []):
-                self._bw.add_record("classes", {
+                add_record("classes", {
                     "name": cls["name"],
                     "file_id": file_id,
                     "start_line": cls.get("start_line", 0),
@@ -278,7 +341,7 @@ class BuildOrchestrator:
                     "doc_comment": cls.get("doc_comment", ""),
                 })
 
-        self._bw.flush_table("classes")
+        flush_table("classes")
 
         # 获取类ID映射
         for pr in parse_results:
@@ -287,7 +350,7 @@ class BuildOrchestrator:
             if not file_id:
                 continue
             for cls in pr.get("classes", []):
-                rows = self._conn_mgr.execute_query(
+                rows = execute_query(
                     "SELECT id FROM classes WHERE name = ? AND file_id = ?",
                     (cls["name"], file_id)
                 )
@@ -305,7 +368,7 @@ class BuildOrchestrator:
                 class_name = method.get("class_name", "")
                 class_id = class_id_map.get((file_path, class_name)) if class_name else None
 
-                self._bw.add_record("methods", {
+                add_record("methods", {
                     "name": method["name"],
                     "class_id": class_id,
                     "file_id": file_id,
@@ -317,7 +380,7 @@ class BuildOrchestrator:
                     "doc_comment": method.get("doc_comment", ""),
                 })
 
-        self._bw.flush_table("methods")
+        flush_table("methods")
 
         # 获取方法ID映射
         for pr in parse_results:
@@ -328,7 +391,7 @@ class BuildOrchestrator:
             for method in pr.get("methods", []):
                 class_name = method.get("class_name", "")
                 class_id = class_id_map.get((file_path, class_name)) if class_name else None
-                rows = self._conn_mgr.execute_query(
+                rows = execute_query(
                     "SELECT id FROM methods WHERE name = ? AND file_id = ? AND class_id IS ?",
                     (method["name"], file_id, class_id)
                 )
@@ -346,7 +409,7 @@ class BuildOrchestrator:
                 class_name = prop.get("class_name", "")
                 class_id = class_id_map.get((file_path, class_name)) if class_name else None
 
-                self._bw.add_record("properties", {
+                add_record("properties", {
                     "name": prop["name"],
                     "class_id": class_id,
                     "file_id": file_id,
@@ -356,7 +419,7 @@ class BuildOrchestrator:
                     "start_line": prop.get("start_line", 0),
                 })
 
-        self._bw.flush_table("properties")
+        flush_table("properties")
 
         # 5. 写入调用关系（需要解析方法名→ID）
         calls_written = 0
@@ -379,7 +442,7 @@ class BuildOrchestrator:
                             break
 
                 if caller_id and callee_id:
-                    self._bw.add_record("calls", {
+                    add_record("calls", {
                         "caller_id": caller_id,
                         "callee_id": callee_id,
                         "call_type": call.get("call_type", 0),
@@ -387,7 +450,7 @@ class BuildOrchestrator:
                     })
                     calls_written += 1
 
-        self._bw.flush_table("calls")
+        flush_table("calls")
 
         # 6. 写入装饰器
         for pr in parse_results:
@@ -407,14 +470,14 @@ class BuildOrchestrator:
                             break
 
                 if target_id:
-                    self._bw.add_record("decorators", {
+                    add_record("decorators", {
                         "name": dec["name"],
                         "target_type": target_type,
                         "target_id": target_id,
                         "arguments": "",
                     })
 
-        self._bw.flush_table("decorators")
+        flush_table("decorators")
 
         # 7. 写入继承关系
         for pr in parse_results:
@@ -429,13 +492,13 @@ class BuildOrchestrator:
                             parent_id = cid
                             break
                 if child_id and parent_id:
-                    self._bw.add_record("inheritance", {
+                    add_record("inheritance", {
                         "child_id": child_id,
                         "parent_id": parent_id,
                         "type": inh.get("type", 0),
                     })
 
-        self._bw.flush_table("inheritance")
+        flush_table("inheritance")
 
         # BUG-B修复: 写入imports表（在写入namespaces之前）
         for pr in parse_results:
@@ -451,7 +514,7 @@ class BuildOrchestrator:
                 # import_path可能是相对路径如 './B' 或 '../utils/Helper'
                 # 提取文件名部分进行匹配
                 import_basename = os.path.basename(import_path)
-                target_rows = self._conn_mgr.execute_query(
+                target_rows = execute_query(
                     "SELECT id FROM files WHERE path LIKE ?",
                     (f"%{import_basename}%",)
                 )
@@ -459,14 +522,14 @@ class BuildOrchestrator:
                     # 找不到目标文件则跳过
                     continue
                 target_file_id = target_rows[0]["id"]
-                self._bw.add_record("imports", {
+                add_record("imports", {
                     "source_file_id": source_file_id,
                     "target_file_id": target_file_id,
                     "import_path": import_path,
                     "is_default": 1 if imp.get("is_default") else 0,
                 })
 
-        self._bw.flush_table("imports")
+        flush_table("imports")
 
         # 8. 写入命名空间
         for pr in parse_results:
@@ -475,14 +538,14 @@ class BuildOrchestrator:
             if not file_id:
                 continue
             for ns in pr.get("namespaces", []):
-                self._bw.add_record("namespaces", {
+                add_record("namespaces", {
                     "name": ns.get("name", ""),
                     "file_id": file_id,
                     "start_line": ns.get("start_line", 0),
                     "end_line": ns.get("end_line", 0),
                 })
 
-        self._bw.flush_all()
+        flush_all()
 
         # 更新报告统计
         total_classes = sum(len(pr.get("classes", [])) for pr in parse_results)
