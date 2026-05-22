@@ -100,6 +100,7 @@ class LLMAnalyzer:
         self.config = config
         self.cache = LLMCache()
         self._executor = ThreadPoolExecutor(max_workers=4)
+        self._closed = False  # 修复 BUG-29: close后防护标志
         self._stats = {
             'api_calls': 0,
             'cache_hits': 0,
@@ -135,8 +136,14 @@ class LLMAnalyzer:
 
                 # 对429（速率限制）状态码特别处理，等待更长时间
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 2 ** (attempt + 1)))
-                    wait_time = max(retry_after, 2 ** (attempt + 1))
+                    # 修复 BUG-33: 429错误计入统计
+                    with self._stats_lock:
+                        self._stats['errors'] += 1
+                    try:
+                        retry_after = int(response.headers.get('Retry-After', 2 ** (attempt + 1)))
+                    except (ValueError, TypeError):
+                        retry_after = 2 ** (attempt + 1)
+                    wait_time = min(max(retry_after, 2 ** (attempt + 1)), 60)  # 上限60秒
                     print(f"[llm_analyzer] 触发速率限制(429)，第{attempt+1}次重试，等待{wait_time}秒")
                     time.sleep(wait_time)
                     continue
@@ -199,6 +206,10 @@ class LLMAnalyzer:
         lines = content.strip().split('\n')
         summary = lines[0][:200] if lines else ""
         
+        # 修复 BUG-28: 空内容应返回低confidence
+        if not summary or not summary.strip():
+            return AnalysisResult(summary="", tags=[], confidence=0.0)
+
         # 从内容中提取标签
         tags = []
         for line in lines:
@@ -231,6 +242,9 @@ class LLMAnalyzer:
         Returns:
             AnalysisResult: 分析结果
         """
+        # 修复 BUG-29: close后禁止使用
+        if self._closed:
+            return AnalysisResult(summary="", tags=[], confidence=0.0)
         # [修复] 检查code_snippet是否为空
         if not code_snippet or not code_snippet.strip():
             return AnalysisResult(
@@ -247,6 +261,15 @@ class LLMAnalyzer:
             return cached
         
         start_time = time.time()
+        
+        # 修复 BUG-35: 截断代码后再检查缓存（使用截断后的内容作为缓存键）
+        truncated_snippet = code_snippet[:1000]
+        if len(code_snippet) > 1000:
+            cached_truncated = self.cache.get(truncated_snippet)
+            if cached_truncated:
+                with self._stats_lock:
+                    self._stats['cache_hits'] += 1
+                return cached_truncated
         
         # 构建提示词
         prompt = f"""请分析以下{entity_type or '代码'}，提供简洁的描述和标签。
@@ -301,9 +324,16 @@ class LLMAnalyzer:
         """
         results = {}
         
+        # 修复 BUG-29: close后禁止使用
+        if self._closed:
+            return results
+
         # 过滤掉已在缓存中的实体
         to_analyze = []
         for i, entity in enumerate(entities):
+            # 修复 BUG-36: 跳过None或无效实体
+            if entity is None or not hasattr(entity, 'code_snippet'):
+                continue
             cached = self.cache.get(entity.code_snippet)
             if cached:
                 results[i] = cached
@@ -473,6 +503,7 @@ class LLMAnalyzer:
     
     def close(self) -> None:
         """关闭分析器"""
+        self._closed = True  # 修复 BUG-29: 标记已关闭
         # 修复：添加超时，避免关闭时无限阻塞
         self._executor.shutdown(wait=True, cancel_futures=True)
 
