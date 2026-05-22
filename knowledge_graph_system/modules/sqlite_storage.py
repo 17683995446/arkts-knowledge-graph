@@ -73,7 +73,7 @@ class SQLiteStorage:
                 conn.execute("ROLLBACK")
             except Exception:
                 pass
-            raise e
+            raise  # 修复 BUG-21: 使用 bare raise 保留完整异常链
     
     def _init_database(self) -> None:
         """初始化数据库表结构"""

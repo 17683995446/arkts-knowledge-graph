@@ -514,6 +514,24 @@ class ArkTSParser:
         # 检查是否以 'import' 开头
         return content[pos:pos + 6] == 'import'
 
+    def _is_reexport_statement(self, content: str, pos: int) -> bool:
+        """检查 pos 位置是否是 re-export 语句的开头（export ... from '...'）"""
+        # 向前检查是否只有空白字符
+        j = pos - 1
+        while j >= 0 and content[j] in (' ', '\t'):
+            j -= 1
+        if j >= 0 and content[j] != '\n':
+            return False
+        # 检查是否以 'export' 开头
+        if content[pos:pos + 6] != 'export':
+            return False
+        # 检查行中是否包含 'from' 关键字（re-export 特征）
+        line_end = content.find('\n', pos)
+        if line_end == -1:
+            line_end = len(content)
+        line = content[pos:line_end]
+        return ' from ' in line or '\tfrom ' in line
+
     def _preprocess_for_parsing(self, content: str) -> str:
         """
         预处理代码，排除字符串和注释中的内容。
@@ -536,6 +554,15 @@ class ArkTSParser:
             # 检查是否在行首（允许前导空白）
             if ch == 'i' and self._is_import_statement(content, i):
                 # 找到行尾，原样保留
+                line_end = content.find('\n', i)
+                if line_end == -1:
+                    line_end = n
+                result.append(content[i:line_end])
+                i = line_end
+                continue
+
+            # 修复 BUG-15: 保留 re-export 语句（export ... from '...'）
+            if ch == 'e' and self._is_reexport_statement(content, i):
                 line_end = content.find('\n', i)
                 if line_end == -1:
                     line_end = n
@@ -817,7 +844,7 @@ class ArkTSParser:
                 signature=match.group(0),
                 start_line=start_line,
                 end_line=end_line,
-                code_snippet='\n'.join(lines[start_line-1:end_line]),
+                code_snippet='\n'.join(original_lines[start_line-1:end_line]),
                 modifiers=[m for m in ['export', 'async', 'default'] if match.group('modifiers') and m in match.group('modifiers')]
             )
             result.entities.append(entity)
@@ -842,7 +869,7 @@ class ArkTSParser:
                 signature=match.group(0),
                 start_line=start_line,
                 end_line=end_line,
-                code_snippet='\n'.join(lines[start_line-1:end_line]),
+                code_snippet='\n'.join(original_lines[start_line-1:end_line]),
                 modifiers=['export'] if match.group('modifiers') else []
             )
             result.entities.append(entity)
@@ -878,7 +905,7 @@ class ArkTSParser:
                 signature=match.group(0),
                 start_line=start_line,
                 end_line=end_line,
-                code_snippet='\n'.join(lines[start_line-1:end_line]),
+                code_snippet='\n'.join(original_lines[start_line-1:end_line]),
                 modifiers=[m for m in ['export', 'const'] if match.group('modifiers') and m in match.group('modifiers')]
             )
             result.entities.append(entity)
@@ -1016,6 +1043,37 @@ class ArkTSParser:
                         imported_names=imported_names
                     ))
 
+        # 修复 BUG-15: 提取 re-export 语句中的依赖路径
+        reexport_patterns = [
+            # export { Foo, Bar } from './module'
+            re.compile(
+                r'^export\s+(?P<names>\{[^}]+\})\s*from\s+[\'"](?P<path>[^\'"]+)[\'"]',
+                re.MULTILINE
+            ),
+            # export * from './module'
+            re.compile(
+                r'^export\s+\*\s+from\s+[\'"](?P<path>[^\'"]+)[\'"]',
+                re.MULTILINE
+            ),
+            # export { default as Foo } from './module'
+            re.compile(
+                r'^export\s+\{[^}]*\}\s+from\s+[\'"](?P<path>[^\'"]+)[\'"]',
+                re.MULTILINE
+            ),
+        ]
+
+        for pattern in reexport_patterns:
+            for match in pattern.finditer(content_for_parsing):
+                module_path = match.group('path')
+                target_file = self._resolve_module_path(module_path, file_path)
+                if target_file:
+                    result.dependencies.append(FileDependency(
+                        source_file=file_path,
+                        target_file=target_file,
+                        dependency_type='import',
+                        imported_names=[]
+                    ))
+
         # 提取函数调用关系（calls）
         # 匹配 entity_name.method() 或 entity_name() 形式的调用
         # 排除 new 关键字后的实例化（new Foo() 不是函数调用）
@@ -1081,26 +1139,38 @@ class ArkTSParser:
         methods = []
         body_lines = class_body.split('\n')
 
+        # 修复 BUG-18: 使用辅助函数提取嵌套括号参数（支持任意深度嵌套）
+        def _extract_params(text: str, start: int) -> str:
+            """从 start 位置开始提取匹配的括号内容，支持任意深度嵌套"""
+            if start >= len(text) or text[start] != '(':
+                return ''
+            depth = 0
+            i = start
+            while i < len(text):
+                if text[i] == '(':
+                    depth += 1
+                elif text[i] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+                i += 1
+            return text[start:]  # 未匹配完整，返回剩余部分
+
         # 方法模式：修饰符 + 方法名 + 参数列表
         method_pattern = re.compile(
             r'^\s*'
             r'(?P<modifiers>(?:(?:public|private|protected|static|async|readonly|abstract|override|get|set)\s+)*)'
             r'(?P<name>\w+)\s*'
-            r'(?P<params>\([^()]*(?:\([^()]*\)[^()]*)*\))'  # 修复：支持一层嵌套括号
-            r'(?:\s*:\s*(?P<return_type>[^{=]+?))?'  # 返回类型
-            r'\s*\{',
+            r'\(',  # 参数列表开始（嵌套提取由辅助函数处理）
             re.MULTILINE
         )
 
-        # 箭头函数属性模式：methodName = () => { }
-        # 修复：参数列表支持嵌套括号 (x: (a: number) => void)
+        # 箭头函数属性模式
         arrow_method_pattern = re.compile(
             r'^\s*'
             r'(?P<modifiers>(?:(?:public|private|protected|static|async|readonly|abstract|override)\s+)*)'
             r'(?P<name>\w+)\s*=\s*'
-            r'(?P<params>\([^()]*(?:\([^()]*\)[^()]*)*\))'  # 支持一层嵌套括号
-            r'(?:\s*:\s*[^{=]+?)?'  # 返回类型（可选）
-            r'\s*=>\s*\{',
+            r'\(',  # 参数列表开始
             re.MULTILINE
         )
 
@@ -1111,6 +1181,16 @@ class ArkTSParser:
                 continue
             # 跳过 if/for/while/switch/catch 等关键字
             if method_name in ('if', 'for', 'while', 'switch', 'catch', 'return', 'throw', 'new', 'typeof', 'instanceof'):
+                continue
+
+            # 修复 BUG-18: 使用辅助函数提取嵌套参数
+            paren_start = match.end() - 1  # 正则匹配到 '(' 的位置
+            params = _extract_params(class_body, paren_start)
+
+            # 验证方法有效性：参数后应有返回类型或方法体
+            after_params = class_body[paren_start + len(params):].lstrip()
+            # 跳过不是真正方法定义的匹配（如 if(xxx)）
+            if not after_params or (after_params[0] not in (':', '{', ')')):
                 continue
 
             # 计算方法在文件中的行号
@@ -1133,7 +1213,7 @@ class ArkTSParser:
                 file_path=file_path,
                 entity_type='function',
                 name=method_name,
-                signature=match.group('params'),
+                signature=params,
                 start_line=method_start_line,
                 end_line=method_end_line,
                 code_snippet=code_snippet,
@@ -1146,6 +1226,15 @@ class ArkTSParser:
         for match in arrow_method_pattern.finditer(class_body):
             method_name = match.group('name')
             if method_name in ('if', 'for', 'while', 'switch', 'catch', 'constructor'):
+                continue
+
+            # 修复 BUG-18: 使用辅助函数提取嵌套参数
+            paren_start = match.end() - 1
+            params = _extract_params(class_body, paren_start)
+
+            after_params = class_body[paren_start + len(params):].lstrip()
+            # 箭头函数应有 => { 或 => expression
+            if not after_params.startswith('=>'):
                 continue
 
             method_start_in_body = class_body[:match.start()].count('\n')
@@ -1165,7 +1254,7 @@ class ArkTSParser:
                 file_path=file_path,
                 entity_type='function',
                 name=method_name,
-                signature=match.group('params'),
+                signature=params,
                 start_line=method_start_line,
                 end_line=method_end_line,
                 code_snippet=code_snippet,
