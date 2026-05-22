@@ -58,12 +58,12 @@ class BatchWriter:
             self._total_written += count
             self._total_flushes += 1
             logger.debug(f"批量写入 {table_name}: {count} 条记录")
+            # 只在成功后清空缓冲区
+            self._buffers[table_name] = []
+            return inserted_ids
         except Exception as e:
             logger.error(f"批量写入 {table_name} 失败: {e}")
             raise
-
-        self._buffers[table_name] = []
-        return inserted_ids
 
     def flush_all(self) -> int:
         """将所有缓冲区写入数据库"""

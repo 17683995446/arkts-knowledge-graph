@@ -10,7 +10,7 @@ from core.parser.arkts_parser import ArkTSParser
 from core.parser.symbol_table_builder import SymbolTableBuilder, SymbolTable
 from core.parser.call_extractor import CallExtractor, CallRelation
 from core.parser.ast_nodes import (
-    FileNode, ClassNode, MethodNode, PropertyNode, ImportNode, ASTNode
+    FileNode, ClassNode, MethodNode, PropertyNode, ImportNode, ASTNode, NamespaceNode
 )
 from core.database.schema_definitions import get_flag_constants
 
@@ -51,7 +51,7 @@ class ArkTSFileParser:
     """
 
     def __init__(self):
-        self._symbol_builder = SymbolTableBuilder()
+        pass
 
     def parse_file(self, file_path: str, source_code: str) -> ParseResult:
         """
@@ -76,9 +76,7 @@ class ArkTSFileParser:
             parser = ArkTSParser(source_code, file_path)
             file_node = parser.parse()
 
-            # 2. 构建符号表
-            self._symbol_builder = SymbolTableBuilder(file_path)
-            symbol_table = self._symbol_builder.build(file_node)
+            # 符号表构建已跳过（当前未使用，节省性能开销）
 
             # 3. 提取实体
             result.classes = self._extract_classes(file_node, file_path)
@@ -282,7 +280,7 @@ class ArkTSFileParser:
         """提取命名空间"""
         namespaces = []
         for child in file_node.children:
-            if hasattr(child, 'node_type') and child.node_type == "NamespaceDeclaration":
+            if isinstance(child, NamespaceNode):
                 namespaces.append({
                     "name": getattr(child, 'name', ''),
                     "file_path": file_path,
@@ -307,27 +305,36 @@ class ArkTSFileParser:
     def _extract_decorators(self, file_node: FileNode) -> List[Dict]:
         """提取装饰器信息"""
         decorators = []
-        for child in file_node.children:
-            if isinstance(child, ClassNode):
-                for dec_name in child.decorators:
-                    decorators.append({
-                        "name": dec_name,
-                        "target_type": 0,  # class
-                        "target_name": child.name,
-                        "file_path": file_node.file_path,
-                    })
-                # 方法和属性的装饰器
-                for sub in child.children:
-                    if isinstance(sub, (MethodNode, PropertyNode)):
-                        target_type = 1 if isinstance(sub, MethodNode) else 2
-                        for dec_name in sub.decorators:
-                            decorators.append({
-                                "name": dec_name,
-                                "target_type": target_type,
-                                "target_name": sub.name,
-                                "file_path": file_node.file_path,
-                            })
+        self._collect_decorators(file_node, decorators)
         return decorators
+
+    def _collect_decorators(self, node: ASTNode, decorators: List[Dict]) -> None:
+        """递归收集装饰器"""
+        if isinstance(node, ClassNode):
+            for dec_name in node.decorators:
+                decorators.append({
+                    "name": dec_name,
+                    "target_type": 0,  # class
+                    "target_name": node.name,
+                    "file_path": node.file_path if hasattr(node, 'file_path') else "",
+                })
+            for sub in node.children:
+                if isinstance(sub, (MethodNode, PropertyNode)):
+                    target_type = 1 if isinstance(sub, MethodNode) else 2
+                    for dec_name in sub.decorators:
+                        decorators.append({
+                            "name": dec_name,
+                            "target_type": target_type,
+                            "target_name": sub.name,
+                            "file_path": node.file_path if hasattr(node, 'file_path') else "",
+                        })
+                elif isinstance(sub, ClassNode):
+                    # 递归处理嵌套类
+                    self._collect_decorators(sub, decorators)
+        else:
+            for child in node.children:
+                if isinstance(child, ClassNode):
+                    self._collect_decorators(child, decorators)
 
     def _extract_inheritance(self, file_node: FileNode) -> List[Dict]:
         """提取继承关系"""

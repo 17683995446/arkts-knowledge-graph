@@ -61,6 +61,8 @@ class CallExtractor:
         "public", "private", "protected", "static", "readonly", "abstract",
         "async", "await", "of", "in", "true", "false", "null", "undefined",
         "super", "this", "yield", "from", "as", "default",
+        "Component", "Entry", "Builder", "State", "Link", "Prop", "Provide",
+        "Watch", "Extend", "Styles", "Animate", "Transition", "Gesture",
     }
 
     def __init__(self, source_lines: List[str]):

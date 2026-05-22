@@ -27,7 +27,12 @@ class DatabaseInitializer:
 
         if force_recreate and os.path.exists(DATABASE_FULL_PATH):
             os.remove(DATABASE_FULL_PATH)
-            logger.warning("已删除旧数据库文件，将重新创建")
+            # 同时删除WAL和SHM文件
+            for suffix in ['-wal', '-shm']:
+                wal_path = DATABASE_FULL_PATH + suffix
+                if os.path.exists(wal_path):
+                    os.remove(wal_path)
+            logger.warning("已删除旧数据库文件（含WAL/SHM），将重新创建")
 
         self._conn_mgr.initialize()
 
@@ -54,7 +59,9 @@ class DatabaseInitializer:
     def is_database_ready(self) -> bool:
         """检查数据库是否已初始化"""
         tables = self._conn_mgr.get_all_table_names()
-        required = {"files", "classes", "methods", "calls", "build_metadata"}
+        required = {"files", "classes", "methods", "properties", "calls",
+                    "components", "imports", "decorators", "inheritance",
+                    "namespaces", "build_metadata"}
         return required.issubset(set(tables))
 
     def get_database_stats(self) -> dict:

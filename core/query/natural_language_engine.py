@@ -112,7 +112,17 @@ class NaturalLanguageQueryEngine:
                 "error": "",
             }
 
-        # 2. 执行SQL
+        # 2. 安全检查：确保SQL只包含SELECT
+        clean_sql = sql.strip().rstrip(";").strip()
+        if not clean_sql.upper().startswith("SELECT"):
+            return {"sql": sql, "results": [], "answer": "安全限制：只允许执行查询操作", "error": "non_select_sql"}
+        # 禁止危险操作
+        dangerous = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "ATTACH", "DETACH"]
+        for word in dangerous:
+            if word in clean_sql.upper():
+                return {"sql": sql, "results": [], "answer": "安全限制：检测到危险操作", "error": "dangerous_sql"}
+
+        # 3. 执行SQL
         try:
             results = self._query_service.execute_raw_sql(sql)
         except Exception as e:
@@ -123,10 +133,10 @@ class NaturalLanguageQueryEngine:
                 "error": str(e),
             }
 
-        # 3. 生成自然语言回答
+        # 4. 生成自然语言回答
         answer = self._generate_answer(question, sql, results)
 
-        # 4. 保存对话历史
+        # 5. 保存对话历史
         self._conversation_history.append({"role": "user", "content": question})
         self._conversation_history.append({"role": "assistant", "content": answer})
 

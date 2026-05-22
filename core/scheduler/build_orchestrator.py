@@ -205,6 +205,8 @@ class BuildOrchestrator:
         conn = sqlite3.connect(conn_mgr._db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-64000")
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
         try:
@@ -218,16 +220,6 @@ class BuildOrchestrator:
             except Exception:
                 pass
             raise
-        finally:
-            conn.close()
-
-    def _do_write_parse_results(self, parse_results: List[Dict],
-                              scanned_files: List[ScannedFile]) -> None:
-        """实际执行写入解析结果（在事务内）"""
-        conn_mgr = get_connection_manager()
-        conn = conn_mgr.get_connection().__enter__()
-        try:
-            self._do_write_parse_results_with_conn(parse_results, scanned_files, conn)
         finally:
             conn.close()
 
@@ -514,10 +506,17 @@ class BuildOrchestrator:
                 # import_path可能是相对路径如 './B' 或 '../utils/Helper'
                 # 提取文件名部分进行匹配
                 import_basename = os.path.basename(import_path)
+                # 优先精确匹配文件名
                 target_rows = execute_query(
-                    "SELECT id FROM files WHERE path LIKE ?",
-                    (f"%{import_basename}%",)
+                    "SELECT id FROM files WHERE path LIKE ? ORDER BY LENGTH(path) ASC",
+                    (f"%/{import_basename}",)
                 )
+                if not target_rows:
+                    # 尝试仅匹配文件名（无路径前缀）
+                    target_rows = execute_query(
+                        "SELECT id FROM files WHERE path = ? OR path LIKE ?",
+                        (import_path, f"%{import_basename}.ets")
+                    )
                 if not target_rows:
                     # 找不到目标文件则跳过
                     continue
@@ -578,46 +577,54 @@ class BuildOrchestrator:
             if rows:
                 file_id = rows[0]["id"]
 
-                # BUG-D修复: 先查出关联的method_id和class_id，再清理关联表
-                method_rows = self._conn_mgr.execute_query(
+                # 批量删除关联数据
+                method_ids = [r["id"] for r in self._conn_mgr.execute_query(
                     "SELECT id FROM methods WHERE file_id = ?", (file_id,)
-                )
-                method_ids = [r["id"] for r in method_rows]
-
-                class_rows = self._conn_mgr.execute_query(
+                )]
+                class_ids = [r["id"] for r in self._conn_mgr.execute_query(
                     "SELECT id FROM classes WHERE file_id = ?", (file_id,)
-                )
-                class_ids = [r["id"] for r in class_rows]
+                )]
 
-                # 清理calls表（通过caller_id或callee_id关联method_id）
-                for mid in method_ids:
-                    self._conn_mgr.execute_update("DELETE FROM calls WHERE caller_id = ?", (mid,))
-                    self._conn_mgr.execute_update("DELETE FROM calls WHERE callee_id = ?", (mid,))
-
-                # 清理decorators表（通过target_id关联method_id或class_id）
-                for mid in method_ids:
+                # 使用 IN 批量删除
+                if method_ids:
+                    placeholders = ",".join(["?"] * len(method_ids))
                     self._conn_mgr.execute_update(
-                        "DELETE FROM decorators WHERE target_id = ? AND target_type = 1", (mid,)
+                        f"DELETE FROM calls WHERE caller_id IN ({placeholders})",
+                        tuple(method_ids)
                     )
-                for cid in class_ids:
                     self._conn_mgr.execute_update(
-                        "DELETE FROM decorators WHERE target_id = ? AND target_type = 0", (cid,)
+                        f"DELETE FROM calls WHERE callee_id IN ({placeholders})",
+                        tuple(method_ids)
+                    )
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM decorators WHERE target_id IN ({placeholders}) AND target_type = 1",
+                        tuple(method_ids)
                     )
 
-                # 清理inheritance表（通过child_id或parent_id关联class_id）
-                for cid in class_ids:
-                    self._conn_mgr.execute_update("DELETE FROM inheritance WHERE child_id = ?", (cid,))
-                    self._conn_mgr.execute_update("DELETE FROM inheritance WHERE parent_id = ?", (cid,))
+                if class_ids:
+                    placeholders = ",".join(["?"] * len(class_ids))
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM decorators WHERE target_id IN ({placeholders}) AND target_type = 0",
+                        tuple(class_ids)
+                    )
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM inheritance WHERE child_id IN ({placeholders})",
+                        tuple(class_ids)
+                    )
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM inheritance WHERE parent_id IN ({placeholders})",
+                        tuple(class_ids)
+                    )
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM components WHERE parent_id IN ({placeholders})",
+                        tuple(class_ids)
+                    )
+                    self._conn_mgr.execute_update(
+                        f"DELETE FROM components WHERE child_id IN ({placeholders})",
+                        tuple(class_ids)
+                    )
 
-                # 清理components表（通过parent_id或child_id关联class_id）
-                for cid in class_ids:
-                    self._conn_mgr.execute_update("DELETE FROM components WHERE parent_id = ?", (cid,))
-                    self._conn_mgr.execute_update("DELETE FROM components WHERE child_id = ?", (cid,))
-
-                # 清理imports表（通过source_file_id关联）
                 self._conn_mgr.execute_update("DELETE FROM imports WHERE source_file_id = ?", (file_id,))
-
-                # 清理主表
                 self._conn_mgr.execute_update("DELETE FROM files WHERE id = ?", (file_id,))
                 self._conn_mgr.execute_update("DELETE FROM classes WHERE file_id = ?", (file_id,))
                 self._conn_mgr.execute_update("DELETE FROM methods WHERE file_id = ?", (file_id,))
@@ -646,10 +653,11 @@ class BuildOrchestrator:
             ("calls_count", str(stats.get("calls", 0)), now),
         ]
 
-        for key, value, ts in metadata:
-            self._conn_mgr.execute_update(
-                "INSERT OR REPLACE INTO build_metadata (key, value, updated_at) VALUES (?, ?, ?)",
-                (key, value, ts)
-            )
+        with self._conn_mgr.get_connection() as conn:
+            for key, value, ts in metadata:
+                conn.execute(
+                    "INSERT OR REPLACE INTO build_metadata (key, value, updated_at) VALUES (?, ?, ?)",
+                    (key, value, ts)
+                )
 
 

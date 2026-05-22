@@ -4,6 +4,7 @@
 """
 import sqlite3
 import os
+import threading
 import logging
 from contextlib import contextmanager
 from config.global_settings import DATABASE_DIRECTORY, DATABASE_FULL_PATH
@@ -76,6 +77,10 @@ class DatabaseConnectionManager:
 
     def get_table_count(self, table_name: str) -> int:
         """获取表的行数"""
+        # 安全校验：只允许字母、数字、下划线
+        import re
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table_name):
+            raise ValueError(f"非法表名: {table_name}")
         result = self.execute_query(f"SELECT COUNT(*) as cnt FROM {table_name}")
         return result[0]["cnt"] if result else 0
 
@@ -95,11 +100,14 @@ class DatabaseConnectionManager:
 
 # 全局单例
 _connection_manager = None
+_connection_manager_lock = threading.Lock()
 
 
 def get_connection_manager() -> DatabaseConnectionManager:
     """获取全局数据库连接管理器单例"""
     global _connection_manager
     if _connection_manager is None:
-        _connection_manager = DatabaseConnectionManager()
+        with _connection_manager_lock:
+            if _connection_manager is None:
+                _connection_manager = DatabaseConnectionManager()
     return _connection_manager

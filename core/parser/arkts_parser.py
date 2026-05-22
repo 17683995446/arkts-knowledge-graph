@@ -675,7 +675,11 @@ class ArkTSParser:
                     elif depth > 0 and (self._is_punctuation('>') or self._is_punctuation(')')):
                         depth -= 1
                     self._advance()
-                param_type = "param"  # 简化
+                # 提取实际类型注解文本
+                type_tokens = self._tokens[type_start:self._pos]
+                param_type = " ".join(t.value for t in type_tokens if t.type not in (TokenType.WHITESPACE, TokenType.NEWLINE, TokenType.COMMENT)).strip()
+                if not param_type:
+                    param_type = "param"
             if param_name:
                 param_info = {"name": param_name, "type": param_type}
                 if is_rest:
@@ -886,9 +890,11 @@ class ArkTSParser:
                     param_name = self._current().value
                     self._advance()
                 
-                # 跳过类型注解
+                # 提取类型注解
+                param_type = ""
                 if self._is_punctuation(':'):
                     self._advance()
+                    type_start = self._pos
                     depth = 0
                     while (self._current().type != TokenType.EOF and
                            not (self._is_punctuation(',') and depth == 0) and
@@ -898,9 +904,11 @@ class ArkTSParser:
                         elif depth > 0 and (self._is_punctuation('>') or self._is_punctuation(')')):
                             depth -= 1
                         self._advance()
-                
+                    type_tokens = self._tokens[type_start:self._pos]
+                    param_type = " ".join(t.value for t in type_tokens if t.type not in (TokenType.WHITESPACE, TokenType.NEWLINE, TokenType.COMMENT)).strip()
+
                 if param_name:
-                    param_info = {"name": param_name, "type": ""}
+                    param_info = {"name": param_name, "type": param_type}
                     if is_rest:
                         param_info["rest"] = True
                     parameters.append(param_info)

@@ -14,6 +14,11 @@ from config.global_settings import (
 logger = logging.getLogger(__name__)
 
 
+class LLMError(Exception):
+    """LLM API调用错误"""
+    pass
+
+
 class SiliconFlowClient:
     """
     硅基流动API客户端
@@ -61,14 +66,11 @@ class SiliconFlowClient:
             data = response.json()
             return data["choices"][0]["message"]["content"]
         except requests.exceptions.Timeout:
-            logger.error("LLM API 请求超时")
-            return "请求超时，请稍后重试"
+            raise LLMError("请求超时，请稍后重试")
         except requests.exceptions.RequestException as e:
-            logger.error(f"LLM API 请求失败: {e}")
-            return f"API请求失败: {e}"
-        except (KeyError, IndexError) as e:
-            logger.error(f"LLM API 响应解析失败: {e}")
-            return "API响应格式异常"
+            raise LLMError(f"API请求失败: {e}")
+        except (KeyError, IndexError):
+            raise LLMError("API响应格式异常")
 
     def test_connection(self) -> bool:
         """测试API连接"""

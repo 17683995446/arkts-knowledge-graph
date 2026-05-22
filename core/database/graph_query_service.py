@@ -157,6 +157,7 @@ class GraphQueryService:
 
     def get_call_graph(self, class_id: int, depth: int = 1) -> Dict[str, Any]:
         """获取类的调用图（BFS多层遍历）"""
+        depth = min(depth, 10)
         methods = self.get_class_methods(class_id)
         nodes = []
         edges = []
@@ -318,27 +319,31 @@ class GraphQueryService:
 
     def search_symbols(self, keyword: str, limit: int = 50) -> Dict[str, List[Dict]]:
         """全局符号搜索"""
-        pattern = f"%{keyword}%"
+        # 转义LIKE通配符
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         return {
             "classes": self._conn_mgr.execute_query(
-                "SELECT * FROM classes WHERE name LIKE ? LIMIT ?", (pattern, limit)
+                "SELECT * FROM classes WHERE name LIKE ? ESCAPE '\\' LIMIT ?", (pattern, limit)
             ),
             "methods": self._conn_mgr.execute_query(
-                "SELECT * FROM methods WHERE name LIKE ? LIMIT ?", (pattern, limit)
+                "SELECT * FROM methods WHERE name LIKE ? ESCAPE '\\' LIMIT ?", (pattern, limit)
             ),
             "properties": self._conn_mgr.execute_query(
-                "SELECT * FROM properties WHERE name LIKE ? LIMIT ?", (pattern, limit)
+                "SELECT * FROM properties WHERE name LIKE ? ESCAPE '\\' LIMIT ?", (pattern, limit)
             ),
             "files": self._conn_mgr.execute_query(
-                "SELECT * FROM files WHERE path LIKE ? LIMIT ?", (pattern, limit)
+                "SELECT * FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT ?", (pattern, limit)
             ),
         }
 
     # ==================== 原始SQL执行 ====================
 
     def execute_raw_sql(self, sql: str) -> List[Dict]:
-        """执行原始SQL查询（只允许SELECT）"""
+        """执行原始SQL查询（只允许单条SELECT）"""
         sql_stripped = sql.strip().upper()
         if not sql_stripped.startswith("SELECT"):
             raise ValueError("只允许执行 SELECT 查询")
+        if ";" in sql.strip().rstrip(";").rstrip():
+            raise ValueError("只允许执行单条SQL语句")
         return self._conn_mgr.execute_query(sql)
