@@ -105,7 +105,8 @@ class CallExtractor:
         caller_name = method_node.name
 
         # 获取方法体文本（排除方法签名行，避免将方法名误报为调用）
-        start = max(0, method_node.start_line)  # start_line is 1-based
+        # start_line 是 1-based，转换为 0-based 索引
+        start = max(0, method_node.start_line - 1)
         end = min(len(self._source_lines), method_node.end_line)
         body_lines = self._source_lines[start:end]
 
@@ -114,10 +115,21 @@ class CallExtractor:
         body_start = 0
         for i, line in enumerate(body_lines):
             if '{' in line:
-                # 方法体从 '{' 所在行开始，但需要排除签名行本身
-                # 如果 '{' 和 '(' 在同一行，说明是签名行，方法体从下一行开始
+                # 方法体从 '{' 所在行开始
                 if '(' in line:
-                    body_start = i + 1
+                    # 签名行：提取 '{' 之后的内容（处理单行方法体）
+                    brace_pos = line.index('{')
+                    after_brace = line[brace_pos + 1:].strip()
+                    if after_brace and '}' not in after_brace:
+                        # '{' 后有代码且没有在同一行关闭 → 方法体从下一行开始
+                        body_start = i + 1
+                    elif after_brace:
+                        # 单行方法体：将 '{' 后的内容作为方法体
+                        body_lines[i] = after_brace.rstrip('}').strip()
+                        body_start = i
+                    else:
+                        # '{' 后为空（多行方法体）
+                        body_start = i + 1
                 else:
                     body_start = i
                 break
