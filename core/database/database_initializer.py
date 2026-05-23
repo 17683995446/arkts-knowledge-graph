@@ -4,10 +4,14 @@
 """
 import time
 import logging
+import threading
 from core.database.connection_manager import get_connection_manager
 from core.database.schema_definitions import get_schema_ddl, get_index_ddl
 
 logger = logging.getLogger(__name__)
+
+# 全局初始化锁，防止并发初始化
+_init_lock = threading.Lock()
 
 
 class DatabaseInitializer:
@@ -22,32 +26,34 @@ class DatabaseInitializer:
         Args:
             force_recreate: 是否强制重建（删除旧数据库）
         """
-        import os
-        from config.global_settings import DATABASE_FULL_PATH
+        # 使用全局锁防止并发初始化
+        with _init_lock:
+            import os
+            from config.global_settings import DATABASE_FULL_PATH
 
-        if force_recreate and os.path.exists(DATABASE_FULL_PATH):
-            os.remove(DATABASE_FULL_PATH)
-            # 同时删除WAL和SHM文件
-            for suffix in ['-wal', '-shm']:
-                wal_path = DATABASE_FULL_PATH + suffix
-                if os.path.exists(wal_path):
-                    os.remove(wal_path)
-            logger.warning("已删除旧数据库文件（含WAL/SHM），将重新创建")
+            if force_recreate and os.path.exists(DATABASE_FULL_PATH):
+                os.remove(DATABASE_FULL_PATH)
+                # 同时删除WAL和SHM文件
+                for suffix in ['-wal', '-shm']:
+                    wal_path = DATABASE_FULL_PATH + suffix
+                    if os.path.exists(wal_path):
+                        os.remove(wal_path)
+                logger.warning("已删除旧数据库文件（含WAL/SHM），将重新创建")
 
-        self._conn_mgr.initialize()
+            self._conn_mgr.initialize()
 
-        # 建表
-        schema_ddl = get_schema_ddl()
-        self._conn_mgr.execute_script(schema_ddl)
-        logger.info(f"已创建 {len(schema_ddl)} 张表")
+            # 建表
+            schema_ddl = get_schema_ddl()
+            self._conn_mgr.execute_script(schema_ddl)
+            logger.info(f"已创建 {len(schema_ddl)} 张表")
 
-        # 建索引
-        index_ddl = get_index_ddl()
-        self._conn_mgr.execute_script(index_ddl)
-        logger.info(f"已创建 {len(index_ddl)} 个索引")
+            # 建索引
+            index_ddl = get_index_ddl()
+            self._conn_mgr.execute_script(index_ddl)
+            logger.info(f"已创建 {len(index_ddl)} 个索引")
 
-        # 初始化元数据
-        self._init_metadata()
+            # 初始化元数据
+            self._init_metadata()
 
     def _init_metadata(self) -> None:
         """初始化构建元数据"""

@@ -39,12 +39,14 @@ class DatabaseConnectionManager:
         if not self._initialized:
             self.initialize()
 
-        conn = sqlite3.connect(self._db_path)
+        # 设置超时时间(秒)，解决高并发下的database is locked问题
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")       # WAL模式，读写不互斥
         conn.execute("PRAGMA synchronous=NORMAL")      # 平衡安全与速度
         conn.execute("PRAGMA cache_size=-64000")       # 64MB缓存
         conn.execute("PRAGMA temp_store=MEMORY")       # 临时表放内存
         conn.execute("PRAGMA foreign_keys=ON")         # 启用外键约束
+        conn.execute("PRAGMA busy_timeout=30000")      # 30秒忙等待超时
         conn.row_factory = sqlite3.Row                 # 返回字典风格行
 
         try:
@@ -110,4 +112,5 @@ def get_connection_manager() -> DatabaseConnectionManager:
         with _connection_manager_lock:
             if _connection_manager is None:
                 _connection_manager = DatabaseConnectionManager()
+                _connection_manager.initialize()  # 确保目录存在
     return _connection_manager
