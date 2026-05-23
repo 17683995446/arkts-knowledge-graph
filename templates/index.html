@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArkTS Knowledge Graph - 代码知识图谱可视化</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Vis.js for graph visualization -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    
+    <!-- Mermaid for diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        /* Graph container */
+        #knowledge-graph {
+            width: 100%;
+            height: 100%;
+            background: #0f172a;
+        }
+        
+        /* Loading animation */
+        .loading-spinner {
+            border: 3px solid #334155;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Tab active state */
+        .tab-active {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+        }
+        
+        /* Card hover effect */
+        .stat-card {
+            transition: all 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(59, 130, 246, 0.15);
+        }
+        
+        /* Mermaid diagram container */
+        .mermaid {
+            background: transparent !important;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
+        <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center space-x-4">
+                    <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
+                        <i class="fas fa-project-diagram text-white text-lg"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold text-white">ArkTS Knowledge Graph</h1>
+                        <p class="text-xs text-slate-400">代码知识图谱可视化系统</p>
+                    </div>
+                </div>
+                
+                <div class="flex items-center space-x-4">
+                    <div id="connection-status" class="flex items-center space-x-2 text-sm">
+                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        <span class="text-slate-400">已连接</span>
+                    </div>
+                    <button onclick="refreshData()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium transition-colors">
+                        <i class="fas fa-sync-alt mr-2"></i>刷新
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex h-[calc(100vh-64px)]">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-slate-800 border-r border-slate-700 flex flex-col">
+            <!-- Navigation Tabs -->
+            <nav class="p-4 space-y-2">
+                <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-active w-full text-left px-4 py-3 rounded-lg font-medium transition-all flex items-center space-x-3">
+                    <i class="fas fa-chart-pie w-5"></i>
+                    <span>概览仪表盘</span>
+                </button>
+                <button onclick="switchTab('graph')" id="tab-graph" class="w-full text-left px-4 py-3 rounded-lg font-medium text-slate-400 hover:bg-slate-700 hover:text-white transition-all flex items-center space-x-3">
+                    <i class="fas fa-circle-nodes w-5"></i>
+                    <span>知识图谱</span>
+                </button>
+                <button onclick="switchTab('architecture')" id="tab-architecture" class="w-full text-left px-4 py-3 rounded-lg font-medium text-slate-400 hover:bg-slate-700 hover:text-white transition-all flex items-center space-x-3">
+                    <i class="fas fa-sitemap w-5"></i>
+                    <span>系统架构</span>
+                </button>
+                <button onclick="switchTab('flow')" id="tab-flow" class="w-full text-left px-4 py-3 rounded-lg font-medium text-slate-400 hover:bg-slate-700 hover:text-white transition-all flex items-center space-x-3">
+                    <i class="fas fa-stream w-5"></i>
+                    <span>流程图</span>
+                </button>
+                <button onclick="switchTab('query')" id="tab-query" class="w-full text-left px-4 py-3 rounded-lg font-medium text-slate-400 hover:bg-slate-700 hover:text-white transition-all flex items-center space-x-3">
+                    <i class="fas fa-search w-5"></i>
+                    <span>智能查询</span>
+                </button>
+            </nav>
+            
+            <!-- Project Info -->
+            <div class="mt-auto p-4 border-t border-slate-700">
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                    <p class="text-xs text-slate-400 mb-1">项目路径</p>
+                    <p id="project-path" class="text-sm font-medium text-slate-200 truncate">加载中...</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Content Area -->
+        <div class="flex-1 overflow-hidden">
+            <!-- Dashboard Tab -->
+            <div id="content-dashboard" class="tab-content h-full overflow-auto p-6">
+                <div class="max-w-6xl mx-auto">
+                    <h2 class="text-2xl font-bold mb-6">项目概览</h2>
+                    
+                    <!-- Statistics Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                        <div class="stat-card bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-code text-blue-400 text-xl"></i>
+                                </div>
+                                <span id="stat-files" class="text-3xl font-bold text-white">-</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">源文件数量</p>
+                        </div>
+                        
+                        <div class="stat-card bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-cube text-purple-400 text-xl"></i>
+                                </div>
+                                <span id="stat-classes" class="text-3xl font-bold text-white">-</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">类定义数量</p>
+                        </div>
+                        
+                        <div class="stat-card bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-function text-green-400 text-xl"></i>
+                                </div>
+                                <span id="stat-methods" class="text-3xl font-bold text-white">-</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">方法数量</p>
+                        </div>
+                        
+                        <div class="stat-card bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div class="w-12 h-12 bg-orange-500/20 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-puzzle-piece text-orange-400 text-xl"></i>
+                                </div>
+                                <span id="stat-components" class="text-3xl font-bold text-white">-</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">组件数量</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Detailed Stats -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <h3 class="text-lg font-semibold mb-4">实体分布</h3>
+                            <div id="entity-distribution" class="space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-slate-400">属性数量</span>
+                                    <span id="stat-properties" class="font-mono text-slate-200">-</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-slate-400">调用关系</span>
+                                    <span id="stat-calls" class="font-mono text-slate-200">-</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-slate-400">组件嵌套</span>
+                                    <span id="stat-nesting" class="font-mono text-slate-200">-</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-slate-400">入口组件</span>
+                                    <span id="stat-entries" class="font-mono text-slate-200">-</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                            <h3 class="text-lg font-semibold mb-4">最近活动</h3>
+                            <div id="recent-activity" class="space-y-3">
+                                <p class="text-slate-500 text-sm">暂无活动记录</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Graph Tab -->
+            <div id="content-graph" class="tab-content hidden h-full">
+                <div class="h-full flex">
+                    <!-- Graph Visualization -->
+                    <div class="flex-1 relative">
+                        <div id="knowledge-graph"></div>
+                        
+                        <!-- Graph Controls -->
+                        <div class="absolute top-4 right-4 flex flex-col space-y-2">
+                            <button onclick="resetGraphView()" class="w-10 h-10 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 transition-colors" title="重置视图">
+                                <i class="fas fa-compress-arrows-alt"></i>
+                            </button>
+                            <button onclick="fitGraphView()" class="w-10 h-10 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 transition-colors" title="适应视图">
+                                <i class="fas fa-expand"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Node Details Panel -->
+                    <div class="w-80 bg-slate-800 border-l border-slate-700 p-4 overflow-auto">
+                        <h3 class="text-lg font-semibold mb-4">节点详情</h3>
+                        <div id="node-details">
+                            <p class="text-slate-500 text-sm">点击图谱中的节点查看详情</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Architecture Tab -->
+            <div id="content-architecture" class="tab-content hidden h-full overflow-auto p-6">
+                <div class="max-w-5xl mx-auto">
+                    <h2 class="text-2xl font-bold mb-6">系统架构图</h2>
+                    
+                    <!-- System Architecture Diagram -->
+                    <div class="bg-slate-800 rounded-xl p-8 border border-slate-700 mb-8">
+                        <div class="mermaid">
+flowchart TB
+    subgraph Input["输入层"]
+        Project["ArkTS项目目录"]
+    end
+    
+    subgraph Parser["解析层"]
+        ArkAnalyzer["ArkAnalyzer<br/>静态解析器"]
+        Extractor["实体关系提取器"]
+    end
+    
+    subgraph Storage["存储层"]
+        SQLite["SQLite数据库<br/>code_knowledge_graph.db"]
+    end
+    
+    subgraph Query["查询层"]
+        NLParser["自然语言解析器"]
+        SQLGen["SQL生成器"]
+        LLM["硅基流动 Qwen2.5-7B"]
+    end
+    
+    subgraph Visualization["可视化层"]
+        WebServer["Flask Web服务器"]
+        Frontend["前端可视化界面"]
+        GraphViz["知识图谱可视化"]
+        DiagramViz["架构/流程图"]
+    end
+    
+    subgraph Monitor["监控层"]
+        FileWatcher["文件监控器"]
+        IncrementalUpdater["增量更新器"]
+    end
+    
+    Project --> ArkAnalyzer
+    ArkAnalyzer --> Extractor
+    Extractor --> SQLite
+    SQLite --> SQLGen
+    NLParser --> LLM
+    LLM --> SQLGen
+    SQLGen --> SQLite
+    SQLite --> WebServer
+    WebServer --> Frontend
+    Frontend --> GraphViz
+    Frontend --> DiagramViz
+    FileWatcher --> IncrementalUpdater
+    IncrementalUpdater --> SQLite
+    
+    style Input fill:#1e3a5f,stroke:#3b82f6,stroke-width:2px,color:#fff
+    style Parser fill:#312e81,stroke:#6366f1,stroke-width:2px,color:#fff
+    style Storage fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff
+    style Query fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff
+    style Visualization fill:#581c87,stroke:#a855f7,stroke-width:2px,color:#fff
+    style Monitor fill:#831843,stroke:#ec4899,stroke-width:2px,color:#fff
+                        </div>
+                    </div>
+                    
+                    <!-- Data Flow Diagram -->
+                    <h3 class="text-xl font-bold mb-4">数据流图</h3>
+                    <div class="bg-slate-800 rounded-xl p-8 border border-slate-700">
+                        <div class="mermaid">
+flowchart LR
+    A[ArkTS源文件] -->|静态分析| B[AST抽象语法树]
+    B --> C{实体提取}
+    C -->|文件| D[files表]
+    C -->|类| E[classes表]
+    C -->|方法| F[methods表]
+    C -->|属性| G[properties表]
+    C -->|调用| H[calls表]
+    C -->|嵌套| I[components表]
+    D --> J[SQLite数据库]
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> J
+    J -->|查询| K[LLM SQL生成]
+    K -->|结果| L[可视化展示]
+    
+    style A fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style J fill:#14532d,stroke:#22c55e,color:#fff
+    style K fill:#7c2d12,stroke:#f97316,color:#fff
+    style L fill:#581c87,stroke:#a855f7,color:#fff
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Flow Tab -->
+            <div id="content-flow" class="tab-content hidden h-full overflow-auto p-6">
+                <div class="max-w-5xl mx-auto">
+                    <h2 class="text-2xl font-bold mb-6">流程图</h2>
+                    
+                    <!-- Build Process Flow -->
+                    <h3 class="text-xl font-bold mb-4">知识图谱构建流程</h3>
+                    <div class="bg-slate-800 rounded-xl p-8 border border-slate-700 mb-8">
+                        <div class="mermaid">
+sequenceDiagram
+    participant User as 用户
+    participant System as 系统
+    participant Parser as 代码解析器
+    participant DB as SQLite数据库
+    participant Watcher as 文件监控器
+    
+    User->>System: 启动系统
+    System->>Parser: 初始化解析器
+    Parser->>System: 返回就绪状态
+    System->>DB: 初始化数据库表
+    DB->>System: 返回就绪状态
+    
+    alt 首次构建
+        User->>System: 指定项目路径
+        System->>Parser: 解析ArkTS项目
+        Parser->>Parser: 提取实体和关系
+        Parser->>DB: 存储到数据库
+        DB->>System: 确认存储完成
+        System->>User: 显示构建结果
+    else 增量更新
+        Watcher->>Watcher: 检测文件变更
+        Watcher->>System: 触发更新事件
+        System->>Parser: 重新解析变更文件
+        Parser->>DB: 更新数据库记录
+        DB->>System: 确认更新完成
+        System->>User: 通知更新完成
+    end
+    
+    User->>System: 提交自然语言查询
+    System->>System: 调用LLM生成SQL
+    System->>DB: 执行SQL查询
+    DB->>System: 返回查询结果
+    System->>User: 展示查询结果
+                        </div>
+                    </div>
+                    
+                    <!-- Query Flow -->
+                    <h3 class="text-xl font-bold mb-4">自然语言查询流程</h3>
+                    <div class="bg-slate-800 rounded-xl p-8 border border-slate-700">
+                        <div class="mermaid">
+sequenceDiagram
+    participant User as 用户
+    participant UI as 前端界面
+    participant API as Flask API
+    participant LLM as 硅基流动LLM
+    participant DB as SQLite数据库
+    
+    User->>UI: 输入自然语言问题
+    UI->>API: POST /api/query
+    API->>API: 获取数据库Schema
+    API->>LLM: 发送问题+Schema
+    LLM->>LLM: 生成SQL查询
+    LLM->>API: 返回SQL语句
+    API->>DB: 执行SQL查询
+    DB->>API: 返回查询结果
+    API->>API: 格式化响应
+    API->>UI: 返回JSON结果
+    UI->>User: 展示查询结果
+    
+    Note over LLM: Qwen2.5-7B-Instruct<br/>自然语言→SQL转换
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Query Tab -->
+            <div id="content-query" class="tab-content hidden h-full overflow-auto p-6">
+                <div class="max-w-4xl mx-auto">
+                    <h2 class="text-2xl font-bold mb-6">智能查询</h2>
+                    
+                    <!-- Query Input -->
+                    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
+                        <label class="block text-sm font-medium text-slate-300 mb-2">
+                            输入你的问题
+                        </label>
+                        <div class="flex space-x-3">
+                            <input 
+                                type="text" 
+                                id="query-input" 
+                                placeholder="例如：UserPage组件包含哪些子组件？"
+                                class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                            <button 
+                                onclick="executeQuery()"
+                                id="query-btn"
+                                class="px-6 py-3 bg-blue-600 hover:bg-blue-500 rounded-lg font-medium transition-colors flex items-center space-x-2"
+                            >
+                                <span>查询</span>
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                        </div>
+                        
+                        <!-- Query Examples -->
+                        <div class="mt-4">
+                            <p class="text-xs text-slate-500 mb-2">示例问题：</p>
+                            <div class="flex flex-wrap gap-2">
+                                <button onclick="setQuery('哪些类继承自BaseView？')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors">
+                                    哪些类继承自BaseView？
+                                </button>
+                                <button onclick="setQuery('UserPage组件包含哪些子组件？')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors">
+                                    UserPage组件包含哪些子组件？
+                                </button>
+                                <button onclick="setQuery('项目中总共有多少个方法？')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors">
+                                    项目中总共有多少个方法？
+                                </button>
+                                <button onclick="setQuery('哪些文件导入了HttpClient？')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors">
+                                    哪些文件导入了HttpClient？
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Query Results -->
+                    <div id="query-results" class="hidden">
+                        <!-- SQL Display -->
+                        <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="text-sm font-medium text-slate-300">生成的SQL</h3>
+                                <span id="query-latency" class="text-xs text-slate-500"></span>
+                            </div>
+                            <pre id="query-sql" class="bg-slate-900 rounded-lg p-4 text-sm font-mono text-green-400 overflow-x-auto"></pre>
+                        </div>
+                        
+                        <!-- Results Table -->
+                        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                            <div class="px-6 py-4 border-b border-slate-700">
+                                <h3 class="text-sm font-medium text-slate-300">查询结果</h3>
+                            </div>
+                            <div id="results-table-container" class="overflow-x-auto">
+                                <!-- Table will be inserted here -->
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Loading State -->
+                    <div id="query-loading" class="hidden">
+                        <div class="flex items-center justify-center py-12">
+                            <div class="loading-spinner mr-3"></div>
+                            <span class="text-slate-400">正在生成SQL并执行查询...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Initialize Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#3b82f6',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#60a5fa',
+                lineColor: '#94a3b8',
+                secondaryColor: '#1e293b',
+                tertiaryColor: '#0f172a'
+            }
+        });
+        
+        // Global state
+        let currentTab = 'dashboard';
+        let graphNetwork = null;
+        let graphData = null;
+        
+        // Tab switching
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('nav button').forEach(btn => {
+                btn.classList.remove('tab-active');
+                btn.classList.add('text-slate-400');
+            });
+            document.getElementById(`tab-${tabName}`).classList.add('tab-active');
+            document.getElementById(`tab-${tabName}`).classList.remove('text-slate-400');
+            
+            // Update content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(`content-${tabName}`).classList.remove('hidden');
+            
+            currentTab = tabName;
+            
+            // Initialize tab-specific content
+            if (tabName === 'graph' && !graphNetwork) {
+                loadGraphData();
+            }
+        }
+        
+        // Load statistics
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if (data.success) {
+                    const stats = data.data;
+                    document.getElementById('stat-files').textContent = stats.file_count || 0;
+                    document.getElementById('stat-classes').textContent = stats.class_count || 0;
+                    document.getElementById('stat-methods').textContent = stats.method_count || 0;
+                    document.getElementById('stat-components').textContent = stats.component_class_count || 0;
+                    document.getElementById('stat-properties').textContent = stats.property_count || 0;
+                    document.getElementById('stat-calls').textContent = stats.call_count || 0;
+                    document.getElementById('stat-nesting').textContent = stats.component_count || 0;
+                    document.getElementById('stat-entries').textContent = stats.entry_class_count || 0;
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        // Load configuration
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('project-path').textContent = data.data.project_path || '未配置';
+                }
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        }
+        
+        // Load graph data
+        async function loadGraphData() {
+            try {
+                const response = await fetch('/api/graph');
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderGraph(data.data);
+                }
+            } catch (error) {
+                console.error('Error loading graph:', error);
+            }
+        }
+        
+        // Render knowledge graph
+        function renderGraph(data) {
+            const container = document.getElementById('knowledge-graph');
+            
+            // Prepare nodes
+            const nodes = new vis.DataSet(
+                data.nodes.map(node => ({
+                    id: node.id,
+                    label: node.label,
+                    color: getNodeColor(node.type),
+                    shape: getNodeShape(node.type),
+                    font: { color: '#fff' }
+                }))
+            );
+            
+            // Prepare edges
+            const edges = new vis.DataSet(
+                data.edges.map(edge => ({
+                    from: edge.from,
+                    to: edge.to,
+                    label: edge.label,
+                    color: { color: '#64748b' },
+                    font: { color: '#94a3b8', size: 12 }
+                }))
+            );
+            
+            const options = {
+                nodes: {
+                    borderWidth: 2,
+                    shadow: true
+                },
+                edges: {
+                    width: 1,
+                    smooth: {
+                        type: 'continuous'
+                    },
+                    arrows: {
+                        to: { enabled: true, scaleFactor: 0.5 }
+                    }
+                },
+                physics: {
+                    stabilization: false,
+                    barnesHut: {
+                        gravitationalConstant: -2000,
+                        centralGravity: 0.3,
+                        springLength: 95,
+                        springConstant: 0.04,
+                        damping: 0.09
+                    }
+                },
+                interaction: {
+                    hover: true,
+                    tooltipDelay: 200
+                }
+            };
+            
+            graphNetwork = new vis.Network(container, { nodes, edges }, options);
+            
+            // Handle node click
+            graphNetwork.on('click', function(params) {
+                if (params.nodes.length > 0) {
+                    showNodeDetails(params.nodes[0], data.nodes);
+                }
+            });
+        }
+        
+        // Get node color based on type
+        function getNodeColor(type) {
+            const colors = {
+                file: { background: '#3b82f6', border: '#2563eb' },
+                class: { background: '#8b5cf6', border: '#7c3aed' },
+                component: { background: '#f97316', border: '#ea580c' },
+                entry: { background: '#22c55e', border: '#16a34a' }
+            };
+            return colors[type] || colors.class;
+        }
+        
+        // Get node shape based on type
+        function getNodeShape(type) {
+            const shapes = {
+                file: 'box',
+                class: 'dot',
+                component: 'diamond',
+                entry: 'star'
+            };
+            return shapes[type] || 'dot';
+        }
+        
+        // Show node details
+        function showNodeDetails(nodeId, nodes) {
+            const node = nodes.find(n => n.id === nodeId);
+            if (!node) return;
+            
+            const detailsHtml = `
+                <div class="space-y-4">
+                    <div>
+                        <p class="text-xs text-slate-500 mb-1">名称</p>
+                        <p class="text-sm font-medium text-white">${node.label}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500 mb-1">类型</p>
+                        <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium ${getTypeBadgeClass(node.type)}">
+                            ${node.type}
+                        </span>
+                    </div>
+                    ${node.path ? `
+                    <div>
+                        <p class="text-xs text-slate-500 mb-1">路径</p>
+                        <p class="text-sm text-slate-300 font-mono break-all">${node.path}</p>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+            
+            document.getElementById('node-details').innerHTML = detailsHtml;
+        }
+        
+        // Get badge class for node type
+        function getTypeBadgeClass(type) {
+            const classes = {
+                file: 'bg-blue-500/20 text-blue-400',
+                class: 'bg-purple-500/20 text-purple-400',
+                component: 'bg-orange-500/20 text-orange-400',
+                entry: 'bg-green-500/20 text-green-400'
+            };
+            return classes[type] || classes.class;
+        }
+        
+        // Graph controls
+        function resetGraphView() {
+            if (graphNetwork) {
+                graphNetwork.fit();
+            }
+        }
+        
+        function fitGraphView() {
+            if (graphNetwork) {
+                graphNetwork.fit({
+                    animation: {
+                        duration: 500,
+                        easingFunction: 'easeInOutQuad'
+                    }
+                });
+            }
+        }
+        
+        // Query functions
+        function setQuery(query) {
+            document.getElementById('query-input').value = query;
+        }
+        
+        async function executeQuery() {
+            const input = document.getElementById('query-input');
+            const question = input.value.trim();
+            
+            if (!question) return;
+            
+            // Show loading
+            document.getElementById('query-loading').classList.remove('hidden');
+            document.getElementById('query-results').classList.add('hidden');
+            
+            try {
+                const response = await fetch('/api/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question })
+                });
+                
+                const data = await response.json();
+                
+                document.getElementById('query-loading').classList.add('hidden');
+                document.getElementById('query-results').classList.remove('hidden');
+                
+                if (data.success) {
+                    document.getElementById('query-sql').textContent = data.sql;
+                    document.getElementById('query-latency').textContent = 
+                        `耗时: ${data.latency_ms?.toFixed(0) || 0}ms | Token: ${data.tokens_used || 0}`;
+                    
+                    renderResultsTable(data.results);
+                } else {
+                    document.getElementById('query-sql').textContent = `-- Error: ${data.error}`;
+                    document.getElementById('results-table-container').innerHTML = `
+                        <div class="p-6 text-center text-red-400">
+                            <i class="fas fa-exclamation-circle mr-2"></i>
+                            ${data.error}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('query-loading').classList.add('hidden');
+                document.getElementById('query-results').classList.remove('hidden');
+                document.getElementById('results-table-container').innerHTML = `
+                    <div class="p-6 text-center text-red-400">
+                        <i class="fas fa-exclamation-circle mr-2"></i>
+                        ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        // Render results table
+        function renderResultsTable(results) {
+            const container = document.getElementById('results-table-container');
+            
+            if (!results || results.length === 0) {
+                container.innerHTML = `
+                    <div class="p-6 text-center text-slate-500">
+                        <i class="fas fa-inbox mr-2"></i>
+                        无查询结果
+                    </div>
+                `;
+                return;
+            }
+            
+            const columns = Object.keys(results[0]);
+            
+            let html = `
+                <table class="w-full text-sm text-left">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-700/50">
+                        <tr>
+                            ${columns.map(col => `<th class="px-6 py-3">${col}</th>`).join('')}
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+            `;
+            
+            results.forEach(row => {
+                html += '<tr class="hover:bg-slate-700/50">';
+                columns.forEach(col => {
+                    const value = row[col];
+                    const displayValue = value === null ? '<span class="text-slate-600">NULL</span>' : 
+                                        typeof value === 'boolean' ? (value ? '✓' : '✗') :
+                                        String(value);
+                    html += `<td class="px-6 py-4 text-slate-300">${displayValue}</td>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+        
+        // Refresh all data
+        function refreshData() {
+            loadStats();
+            loadConfig();
+            if (currentTab === 'graph') {
+                loadGraphData();
+            }
+        }
+        
+        // Handle Enter key in query input
+        document.getElementById('query-input')?.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                executeQuery();
+            }
+        });
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStats();
+            loadConfig();
+        });
+    </script>
+</body>
+</html>
