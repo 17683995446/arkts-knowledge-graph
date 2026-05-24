@@ -1,30 +1,18 @@
-# ArkTS Knowledge Graph - Dependencies
+# ArkTS Knowledge Graph - Dependencies (simplified for compatibility)
 # Core Framework
-flask==3.0.3
-flask-cors==4.0.1
-flask-socketio==5.3.6
-
-# Database
-sqlite3-python==0.0.1
+flask
+flask-cors
+flask-socketio
 
 # HTTP Client for LLM API
-requests==2.32.3
-httpx==0.27.0
+requests
+httpx
 
 # File System Monitoring
-watchdog==4.0.1
-
-# Data Processing
-pydantic==2.8.2
-python-dotenv==1.0.1
+watchdog
 
 # Visualization Support (for backend data processing)
-networkx==3.3
-
-# Async Support
-asyncio-mqtt==0.16.1
+networkx
 
 # Development Tools
-pytest==8.3.2
-pytest-asyncio==0.23.8
-black==24.4.2
+pytest
