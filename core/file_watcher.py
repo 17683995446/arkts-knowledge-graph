@@ -315,86 +315,135 @@ class IncrementalUpdater:
     def _update_file(self, file_path: str) -> None:
         """
         Update a single file in the database.
-        
+
         This involves:
-        1. Removing old entities for this file (cascade)
-        2. Re-parsing the file
+        1. Re-parsing the file (into temporary storage)
+        2. Removing old entities for this file (cascade)
         3. Inserting new entities
         """
         logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 开始增量更新: %s", file_path)
         from core.entity_models import FileEntity, ClassEntity, MethodEntity, PropertyEntity
-        
+        from parser.ark_analyzer_adapter import TypeScriptRegexParser, ParserConfig, KnowledgeGraph
+
         abs_path = str(file_path)
         project_path = str(self.parser.config.target_project_path)
-        
+
         # 计算相对路径
         if abs_path.startswith(project_path):
             relative_path = abs_path[len(project_path):].lstrip('/\\')
         else:
             relative_path = abs_path
-        
-        # 1. 查找并删除旧实体
+
+        # Check if file still exists
+        file_path_obj = __import__('pathlib').Path(abs_path)
+        project_path_obj = __import__('pathlib').Path(project_path)
+
+        if not file_path_obj.exists():
+            # File was deleted - remove old entities
+            old_file = self.repository.get_file_by_path(relative_path)
+            if old_file:
+                logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 文件已被删除, 清理旧实体: %s", file_path)
+                self.repository.delete_file_cascade(old_file['id'])
+                # Clean metadata for this file
+                old_file_id = old_file['id']
+                for key in ['imports', 'inheritance', 'calls', 'components']:
+                    if key in self.parser.knowledge_graph.metadata:
+                        self.parser.knowledge_graph.metadata[key] = [
+                            item for item in self.parser.knowledge_graph.metadata[key]
+                            if item.get('source_file_id') != old_file_id
+                        ]
+            return
+
+        # 1. Parse the file into a TEMPORARY knowledge_graph (don't touch global state)
+        temp_kg = KnowledgeGraph()
+        temp_parser = TypeScriptRegexParser(ParserConfig(
+            target_project_path=project_path,
+            file_patterns=self.parser.config.file_patterns
+        ))
+        temp_parser.knowledge_graph = temp_kg
+
+        try:
+            temp_parser._parse_file(file_path_obj, project_path_obj)
+        except Exception as parse_error:
+            logger.error("[DEBUG] [IncrementalUpdater] [_update_file] 解析文件异常, 跳过更新: %s, error=%s",
+                         file_path, parse_error)
+            return  # Don't delete old data if parsing fails
+
+        # 2. Now safely delete old data and insert new data
         old_file = self.repository.get_file_by_path(relative_path)
+        old_file_id = old_file.get('id', '') if old_file else ''
+
         if old_file:
             logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 删除旧实体: file_id=%s", old_file['id'])
             self.repository.delete_file_cascade(old_file['id'])
-        else:
-            logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 未找到旧文件记录: %s", relative_path)
-        
-        # 2. 重新解析该文件
-        file_path_obj = __import__('pathlib').Path(abs_path)
-        project_path_obj = __import__('pathlib').Path(project_path)
-        
-        if not file_path_obj.exists():
-            # 文件已被删除，旧实体已清理
-            logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 文件已被删除, 旧实体已清理: %s", file_path)
-            return
-        
-        # 临时保存旧的 knowledge_graph metadata（保留全局关系）
-        old_metadata = dict(self.parser.knowledge_graph.metadata)
-        
-        # 备份旧的实体和关系，防止解析异常导致数据丢失
-        old_entities = dict(self.parser.knowledge_graph.entities)
-        old_relations = dict(self.parser.knowledge_graph.relations)
-        
-        # 清空实体（保留metadata）
-        self.parser.knowledge_graph.entities.clear()
-        self.parser.knowledge_graph.relations.clear()
-        
-        try:
-            # 重新解析该文件
-            self.parser._parse_file(file_path_obj, project_path_obj)
-        except Exception as parse_error:
-            # 解析异常，恢复旧的实体和关系
-            self.parser.knowledge_graph.entities = old_entities
-            self.parser.knowledge_graph.relations = old_relations
-            self.parser.knowledge_graph.metadata = old_metadata
-            logger.error("[DEBUG] [IncrementalUpdater] [_update_file] 解析文件异常，已恢复旧数据: %s, error=%s",
-                         file_path, parse_error)
-            raise
-        
-        # 3. 将新实体插入数据库
-        logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 重新解析完成, 新实体数量=%d", len(self.parser.knowledge_graph.entities))
-        for entity in self.parser.knowledge_graph.entities.values():
+
+        # 3. Insert new entities into database
+        logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 解析完成, 新实体数量=%d", len(temp_kg.entities))
+        for entity in temp_kg.entities.values():
             if isinstance(entity, FileEntity):
                 self.repository.save_file(entity)
             elif isinstance(entity, ClassEntity):
                 self.repository.save_class(entity)
-                # 处理继承关系
                 if entity.parent_class:
+                    # 查找父类ID
+                    parent_class_id = None
+                    for e in temp_kg.entities.values():
+                        if isinstance(e, ClassEntity) and e.name == entity.parent_class:
+                            parent_class_id = e.id
+                            break
                     self.repository.save_inheritance(
-                        entity.id, None, entity.parent_class, 'extends'
+                        entity.id, parent_class_id,
+                        entity.parent_class, 'extends'
                     )
+                if hasattr(entity, 'implemented_interfaces') and entity.implemented_interfaces:
+                    for iface in entity.implemented_interfaces:
+                        self.repository.save_inheritance(
+                            entity.id, None, iface.strip(), 'implements'
+                        )
             elif isinstance(entity, MethodEntity):
                 self.repository.save_method(entity)
             elif isinstance(entity, PropertyEntity):
                 self.repository.save_property(entity)
-        
-        # 处理导入关系
-        if 'imports' in self.parser.knowledge_graph.metadata:
-            for imp in self.parser.knowledge_graph.metadata['imports']:
-                self.repository.save_import(imp['source_file_id'], imp['import_path'])
-        
-        # 恢复全局 metadata（增量更新不重建全局关系）
-        self.parser.knowledge_graph.metadata = old_metadata
+
+        # 4. Save relationships
+        for rel_type in ['imports', 'inheritance', 'calls', 'components']:
+            if rel_type in temp_kg.metadata:
+                for item in temp_kg.metadata[rel_type]:
+                    if rel_type == 'imports':
+                        self.repository.save_import(
+                            item.get('source_file_id'),
+                            item.get('import_path')
+                        )
+                    elif rel_type == 'calls':
+                        self.repository.save_call(item)
+                    elif rel_type == 'components':
+                        self.repository.save_component_nesting(item)
+                    elif rel_type == 'inheritance':
+                        self.repository.save_inheritance(
+                            item.get('child_class_id'),
+                            item.get('parent_class_id'),
+                            item.get('parent_class_name'),
+                            item.get('relation_type')
+                        )
+
+        # 5. Update global knowledge_graph metadata (clean old, add new)
+        if old_file_id:
+            for key in ['imports', 'inheritance', 'calls', 'components']:
+                if key in self.parser.knowledge_graph.metadata:
+                    self.parser.knowledge_graph.metadata[key] = [
+                        item for item in self.parser.knowledge_graph.metadata[key]
+                        if item.get('source_file_id') != old_file_id
+                    ]
+
+        # Add new metadata
+        for rel_type in ['imports', 'inheritance', 'calls', 'components']:
+            if rel_type in temp_kg.metadata:
+                if rel_type not in self.parser.knowledge_graph.metadata:
+                    self.parser.knowledge_graph.metadata[rel_type] = []
+                self.parser.knowledge_graph.metadata[rel_type].extend(temp_kg.metadata[rel_type])
+
+        # Update global entities (only for this file)
+        for entity in temp_kg.entities.values():
+            self.parser.knowledge_graph.entities[entity.id] = entity
+
         logger.debug("[DEBUG] [IncrementalUpdater] [_update_file] 增量更新完成: %s", file_path)

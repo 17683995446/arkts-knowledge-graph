@@ -50,12 +50,12 @@ class TypeScriptRegexParser:
     
     # Regex patterns for ArkTS/TypeScript parsing
     PATTERNS = {
-        'import': re.compile(r'import\s+(?:(\{[^}]+\})|(\*\s+as\s+\w+)|(\w+))\s+from\s+[\'"]([^\'"]+)[\'"]'),
+        'import': re.compile(r'import\s+(?:type\s+)?(?:(\{[^}]+\})|(\*\s+as\s+\w+)|(\w+))\s+from\s+[\'"]([^\'"]+)[\'"]'),
         'namespace': re.compile(r'(?:export\s+)?namespace\s+([\w.]+)\s*\{'),
-        'class': re.compile(r'(?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([^{]+))?'),
+        'class': re.compile(r'(?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:<(?:[^<>]|<[^<>]*>)*>)?(?:\s+extends\s+([\w.<>,\s]+?)(?=\s+implements|\s*\{|$))?(?:\s+implements\s+([^{]+))?'),
         'struct': re.compile(r'(?:export\s+)?\s*struct\s+(\w+)'),
         'interface': re.compile(r'(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?'),
-        'enum': re.compile(r'(?:export\s+)?enum\s+(\w+)\s*\{'),
+        'enum': re.compile(r'(?:export\s+)?(?:const\s+)?enum\s+(\w+)\s*\{'),
         'type_alias': re.compile(r'(?:export\s+)?type\s+(\w+)(?:<[^>]+>)?\s*=\s*([^;\n{]+?)(?:\s*;|\s*$)', re.MULTILINE),
         'component': re.compile(r'@(?:Component|Entry)\s*(?:\([^)]*\))?'),
         'decorator': re.compile(r'@(\w+)(?:\([^)]*\))?'),
@@ -72,7 +72,7 @@ class TypeScriptRegexParser:
         'storage_prop_property': re.compile(r'@StorageProp\s*\([^)]*\)\s+(?:private\s+)?(\w+)(\?)?:\s*([^;=]+)(?:\s*=\s*([^;]+))?'),
         'local_storage_link_property': re.compile(r'@LocalStorageLink\s*\([^)]*\)\s+(?:private\s+)?(\w+)(\?)?:\s*([^;=]+)(?:\s*=\s*([^;]+))?'),
         'local_storage_prop_property': re.compile(r'@LocalStorageProp\s*\([^)]*\)\s+(?:private\s+)?(\w+)(\?)?:\s*([^;=]+)(?:\s*=\s*([^;]+))?'),
-        'method_call': re.compile(r'(\w+)\s*\.\s*(\w+)\s*\('),
+        'method_call': re.compile(r'(\w+)\s*\?*\.\s*\?*(\w+)\s*\('),
         'component_usage': re.compile(r'<(\w+)(?:\s[^>]*)?\s*/?>'),
         'extends': re.compile(r'extends\s+(\w+)'),
         'implements': re.compile(r'implements\s+([^{]+)'),
@@ -109,6 +109,7 @@ class TypeScriptRegexParser:
         source_files = []
         for pattern in self.config.file_patterns:
             source_files.extend(project_path.rglob(pattern))
+        source_files = [f for f in source_files if not f.is_symlink()]
         
         logger.debug("[DEBUG] [TypeScriptRegexParser] [parse_project] 找到 %d 个源文件", len(source_files))
         
@@ -125,14 +126,26 @@ class TypeScriptRegexParser:
         
         logger.debug("[DEBUG] [TypeScriptRegexParser] [parse_project] 项目解析完成, 最终实体总数=%d", len(self.knowledge_graph.entities))
         return self.knowledge_graph
-    
+
+    def _read_file_with_fallback_encoding(self, file_path) -> Optional[str]:
+        """尝试多种编码读取文件"""
+        for encoding in ['utf-8-sig', 'utf-8', 'gbk', 'gb2312', 'latin-1']:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    return f.read()
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return None
+
     def _parse_file(self, file_path: Path, project_path: Path) -> None:
         """Parse a single file and extract entities."""
         logger.debug("[DEBUG] [TypeScriptRegexParser] [_parse_file] 开始解析文件: %s", file_path)
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                lines = content.split('\n')
+            content = self._read_file_with_fallback_encoding(file_path)
+            if content is None:
+                logger.warning("无法解码文件: %s", file_path)
+                return
+            lines = content.split('\n')
         except Exception as e:
             logger.error("[DEBUG] [TypeScriptRegexParser] [_parse_file] 读取文件失败: %s, 错误: %s", file_path, e)
             print(f"Error reading file {file_path}: {e}")
@@ -214,16 +227,23 @@ class TypeScriptRegexParser:
             # 跟踪大括号深度（用于检测命名空间范围）
             # 排除字符串和注释中的大括号
             code_only = re.sub(r'//.*$', '', stripped)  # 移除行尾注释
-            code_only = re.sub(r'"[^"]*"', '""', code_only)  # 简化字符串
-            code_only = re.sub(r"'[^']*'", "''", code_only)  # 简化单引号字符串
+            code_only = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code_only)  # 简化字符串（处理转义引号）
+            code_only = re.sub(r"'(?:[^'\\]|\\.)*'", "''", code_only)  # 简化单引号字符串（处理转义引号）
+            code_only = re.sub(r'`(?:[^`\\]|\\.)*`', '``', code_only)  # 简化模板字符串（处理转义反引号）
             
             # 检测命名空间开始
             namespace_match = self.PATTERNS['namespace'].search(line)
-            if namespace_match and not in_namespace:
+            if namespace_match:
                 ns_name = namespace_match.group(1)
+                # namespace_match.group(1) 对于 "namespace A.B" 返回 "A.B"
+                # 如果已有namespace_stack，拼接为 "parent.A.B"
+                if namespace_stack:
+                    ns_name = namespace_stack[-1] + '.' + ns_name
                 namespace_stack.append(ns_name)
                 in_namespace = True
-                namespace_brace_depth = brace_depth
+                # 将命名空间行的 { 计入 brace_depth，避免后续行提前结束命名空间
+                namespace_brace_depth = brace_depth + code_only.count('{') - code_only.count('}')
+                brace_depth = namespace_brace_depth
                 logger.debug("[DEBUG] [TypeScriptRegexParser] [_parse_classes] 检测到命名空间: %s (行 %d)", ns_name, i)
                 continue
             
@@ -234,7 +254,7 @@ class TypeScriptRegexParser:
             # 检测命名空间结束
             if in_namespace:
                 brace_depth += open_braces - close_braces
-                if brace_depth <= namespace_brace_depth:
+                if brace_depth < namespace_brace_depth:
                     # 命名空间结束
                     namespace_stack.pop()
                     in_namespace = len(namespace_stack) > 0
@@ -244,7 +264,7 @@ class TypeScriptRegexParser:
                 brace_depth += open_braces - close_braces
             
             # 构建完整类名（包含命名空间前缀）
-            current_namespace = '.'.join(namespace_stack) if namespace_stack else None
+            current_namespace = namespace_stack[-1] if namespace_stack else None
             
             # Check for struct definition (ArkTS uses struct for components)
             struct_match = self.PATTERNS['struct'].search(line)
@@ -259,14 +279,28 @@ class TypeScriptRegexParser:
                 struct_matches.append((struct_name, full_name, i, decorators, is_entry, is_component, is_exported, current_namespace))
                 logger.debug("[DEBUG] [TypeScriptRegexParser] [_parse_classes] 检测到struct: %s (行 %d), 装饰器=%s, is_component=%s, is_entry=%s, namespace=%s",
                              struct_name, i, decorators, is_component, is_entry, current_namespace)
+                # 在 continue 之前更新大括号深度
+                open_braces = code_only.count('{')
+                close_braces = code_only.count('}')
+                if in_namespace:
+                    brace_depth += open_braces - close_braces
+                else:
+                    brace_depth += open_braces - close_braces
                 continue
             
             # Check for regular class
             class_match = self.PATTERNS['class'].search(line)
+            if not class_match and 'class' in stripped and i < len(lines):
+                # 可能因为泛型约束跨行导致正则不匹配，尝试将当前行与下一行合并后再匹配
+                merged_line = line + ' ' + lines[i]
+                class_match = self.PATTERNS['class'].search(merged_line)
             if class_match:
                 class_name = class_match.group(1)
                 full_name = f"{current_namespace}.{class_name}" if current_namespace else class_name
                 parent_class = class_match.group(2)
+                # Strip generic parameters from parent class name
+                if parent_class:
+                    parent_class = re.sub(r'<.*>', '', parent_class).strip()
                 implements = class_match.group(3)
                 decorators = self._get_decorators_for_line(lines, i - 1)
                 is_exported = line.strip().startswith('export')
@@ -284,7 +318,7 @@ class TypeScriptRegexParser:
                 logger.debug("[DEBUG] [TypeScriptRegexParser] [_parse_classes] 创建struct实体: %s (full_name=%s, 行 %d)", class_name, full_name, line_num)
             else:  # Regular class
                 class_name, full_name, line_num, decorators, is_entry, is_component, is_exported, namespace, parent_class, implements_str = match
-                implements = [i.strip() for i in implements_str.split(',')] if implements_str else []
+                implements = [re.sub(r'<.*>', '', i.strip()) for i in implements_str.split(',')] if implements_str else []
                 logger.debug("[DEBUG] [TypeScriptRegexParser] [_parse_classes] 创建class实体: %s (full_name=%s, 行 %d, parent=%s, implements=%s)",
                              class_name, full_name, line_num, parent_class, implements)
             
@@ -479,7 +513,7 @@ class TypeScriptRegexParser:
                 is_component=False,
                 is_entry=False,
                 is_exported='export' in content[max(0, match.start()-20):match.start()],
-                decorators='[]',
+                decorators=[],
                 parent_class=None,
                 implemented_interfaces=[],
                 metadata={'kind': 'type_alias', 'definition': type_definition, 'file_path': file_path}
@@ -528,7 +562,7 @@ class TypeScriptRegexParser:
                 is_component=False,
                 is_entry=False,
                 is_exported='export' in content[max(0, match.start()-20):match.start()],
-                decorators='[]',
+                decorators=[],
                 parent_class=None,
                 implemented_interfaces=[],
                 metadata={'kind': 'type_alias', 'definition': obj_body[:100], 'file_path': file_path}
@@ -610,9 +644,17 @@ class TypeScriptRegexParser:
             lines_consumed = current_idx - start_idx + 1
             logger.debug("[DEBUG] [TypeScriptRegexParser] [_extract_method_signature] getter/setter签名提取完成: name=%s, return_type=%s, lines_consumed=%d",
                          method_name, return_type, lines_consumed)
+            # Extract setter parameter
+            params = ''
+            if is_setter:
+                # Find the parameter between ( and ) in the original line
+                paren_match = re.search(r'\(([^)]*)\)', body_lines[start_idx] if start_idx < len(body_lines) else '')
+                if paren_match:
+                    params = paren_match.group(1).strip()
+
             return {
                 'name': method_name,
-                'params': '',  # getter/setter 无参数
+                'params': params,
                 'return_type': return_type,
                 'lines_consumed': lines_consumed,
                 'is_getter': is_getter,
@@ -770,9 +812,14 @@ class TypeScriptRegexParser:
             'is_setter': False
         }
 
-    def _find_class_body(self, content: str, class_name: str) -> tuple:
+    def _find_class_body(self, content: str, class_name: str, start_offset: int = 0) -> tuple:
         """
         Find the body of a class/struct, correctly handling generic constraints.
+        
+        Args:
+            content: The source file content.
+            class_name: The name of the class/struct to find.
+            start_offset: The position in content to start searching from (for same-name classes).
         
         Returns:
             Tuple of (class_body, class_start_offset, line_offset) or None
@@ -780,7 +827,7 @@ class TypeScriptRegexParser:
         logger.debug("[DEBUG] [TypeScriptRegexParser] [_find_class_body] 查找类体: %s", class_name)
         # 找到 class/struct 关键字
         pattern = re.compile(rf'(?:class|struct)\s+{re.escape(class_name)}\b')
-        match = pattern.search(content)
+        match = pattern.search(content, start_offset)
         if not match:
             logger.debug("[DEBUG] [TypeScriptRegexParser] [_find_class_body] 未找到类定义: %s", class_name)
             return None
@@ -803,14 +850,31 @@ class TypeScriptRegexParser:
                 # 找到匹配的 }
                 brace_count = 1
                 class_end = class_start
-                for i, c in enumerate(content[class_start:], class_start):
-                    if c == '{':
-                        brace_count += 1
-                    elif c == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            class_end = i
-                            break
+                in_single_quote = False
+                in_double_quote = False
+                in_template = False
+                i = class_start
+                while i < len(content):
+                    c = content[i]
+                    # Handle escape sequences
+                    if i > 0 and content[i-1] == '\\' and not (i > 1 and content[i-2] == '\\'):
+                        i += 1
+                        continue
+                    if c == "'" and not in_double_quote and not in_template:
+                        in_single_quote = not in_single_quote
+                    elif c == '"' and not in_single_quote and not in_template:
+                        in_double_quote = not in_double_quote
+                    elif c == '`' and not in_single_quote and not in_double_quote:
+                        in_template = not in_template
+                    elif not in_single_quote and not in_double_quote and not in_template:
+                        if c == '{':
+                            brace_count += 1
+                        elif c == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                class_end = i
+                                break
+                    i += 1
                 
                 class_body = content[class_start:class_end]
                 line_offset = content[:class_start].count('\n')
@@ -844,7 +908,7 @@ class TypeScriptRegexParser:
             'console', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
             'Math', 'Date', 'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet',
             'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-            'fetch', 'require', 'import', 'export',
+            'require', 'import', 'export',
             'super', 'this', 'self',
             'prototype', 'class', 'function'
         }
@@ -935,9 +999,10 @@ class TypeScriptRegexParser:
                 if (method_name not in non_method_keywords and 
                     method_name not in arkui_methods and 
                     method_name not in arkui_components):
-                    # 跳过已处理的方法
-                    if method_name not in processed_methods:
-                        processed_methods.add(method_name)
+                    # 跳过已处理的方法（使用方法名+参数签名作为key，保留重载）
+                    method_key = (method_name, params)
+                    if method_key not in processed_methods:
+                        processed_methods.add(method_key)
                         
                         line_num = class_lines + i + 1
                         method_id = self._generate_id('method', method_name, f"{class_name}.{method_name}")
@@ -988,13 +1053,26 @@ class TypeScriptRegexParser:
                                      class_name, method_name, line_num, param_list, return_type, method_decorators, all_modifiers.strip())
                         
                         # 提取方法调用关系 - 使用实际的方法体而非整个类体
-                        method_body_start = i + lines_consumed
-                        method_body, body_lines_consumed = self._extract_method_body(body_lines, method_body_start)
-                        if method_body:
-                            self._extract_method_calls(method_body, method_id, class_id, class_name)
-                        
-                        # 跳过已处理的行数（签名 + 方法体）
-                        i += lines_consumed + body_lines_consumed
+                        # 检查签名行是否包含方法体的 {
+                        sig_line = body_lines[i] if i < len(body_lines) else ''
+                        body_lines_consumed = 0
+                        if '{' in sig_line:
+                            # 签名和body在同一行
+                            method_body_start = i
+                            method_body, body_lines_consumed = self._extract_method_body(body_lines, method_body_start)
+                            if method_body:
+                                self._extract_method_calls(method_body, method_id, class_id, class_name)
+                            i += lines_consumed  # 签名行已包含方法体
+                        elif i + lines_consumed < len(body_lines) and body_lines[i + lines_consumed].strip().startswith('{'):
+                            # 方法体在下一行以 { 开头
+                            method_body_start = i + lines_consumed
+                            method_body, body_lines_consumed = self._extract_method_body(body_lines, method_body_start)
+                            if method_body:
+                                self._extract_method_calls(method_body, method_id, class_id, class_name)
+                            i += lines_consumed + body_lines_consumed  # 签名行 + 方法体行
+                        else:
+                            # 无方法体的声明（如重载声明、抽象方法），不提取body，只前进签名行
+                            i += lines_consumed
                         continue
             
             i += 1
@@ -1120,6 +1198,7 @@ class TypeScriptRegexParser:
         Extract method body from body_lines starting at start_idx (the line containing '{').
 
         Correctly handles nested braces (lambdas, objects, if/for/while blocks, etc.).
+        Skips braces inside string literals (single-quoted, double-quoted, template literals).
 
         Returns:
             Tuple of (method_body_text, lines_consumed) or (None, 0) if no body found.
@@ -1127,17 +1206,34 @@ class TypeScriptRegexParser:
         lines_count = len(body_lines)
         brace_depth = 0
         body_lines_list = []
+        in_single_quote = False
+        in_double_quote = False
+        in_template = False
 
         for idx in range(start_idx, lines_count):
             line = body_lines[idx]
-            for char in line:
-                if char == '{':
-                    brace_depth += 1
-                elif char == '}':
-                    brace_depth -= 1
-                    if brace_depth == 0:
-                        body_lines_list.append(line)
-                        return '\n'.join(body_lines_list), len(body_lines_list)
+            i = 0
+            while i < len(line):
+                c = line[i]
+                # Handle escape sequences
+                if c == '\\' and i + 1 < len(line):
+                    i += 2
+                    continue
+                if c == "'" and not in_double_quote and not in_template:
+                    in_single_quote = not in_single_quote
+                elif c == '"' and not in_single_quote and not in_template:
+                    in_double_quote = not in_double_quote
+                elif c == '`' and not in_single_quote and not in_double_quote:
+                    in_template = not in_template
+                elif not in_single_quote and not in_double_quote and not in_template:
+                    if c == '{':
+                        brace_depth += 1
+                    elif c == '}':
+                        brace_depth -= 1
+                        if brace_depth == 0:
+                            body_lines_list.append(line)
+                            return '\n'.join(body_lines_list), len(body_lines_list)
+                i += 1
             body_lines_list.append(line)
 
         # Unmatched braces - return what we have
@@ -1218,13 +1314,21 @@ class TypeScriptRegexParser:
     def _extract_component_nesting(self, content: str, class_name: str, class_id: str) -> None:
         """Extract component nesting relationships from build() method."""
         logger.debug("[DEBUG] [TypeScriptRegexParser] [_extract_component_nesting] 提取组件嵌套, class=%s", class_name)
+        # 先通过 _find_class_body 获取类体，避免在整个文件中搜索 build()
+        result = self._find_class_body(content, class_name)
+        if result:
+            class_body = result[0]
+        else:
+            logger.debug("[DEBUG] [TypeScriptRegexParser] [_extract_component_nesting] 未找到类 %s 的类体，回退到全文搜索", class_name)
+            class_body = content
+
         # 找到 build 方法体
         build_pattern = re.compile(
             rf'(?:private\s+|public\s+|protected\s+)?build\s*\(\s*\)'
             rf'(?:\s*:\s*[^{{]+)?\s*{{',
             re.DOTALL
         )
-        build_match = build_pattern.search(content)
+        build_match = build_pattern.search(class_body)
         if not build_match:
             logger.debug("[DEBUG] [TypeScriptRegexParser] [_extract_component_nesting] 类 %s 未找到 build() 方法", class_name)
             return
@@ -1232,16 +1336,28 @@ class TypeScriptRegexParser:
         build_start = build_match.end()
         brace_count = 1
         build_end = build_start
-        for i, char in enumerate(content[build_start:], build_start):
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    build_end = i
-                    break
+        in_single_quote = False
+        in_double_quote = False
+        in_template = False
+        for i, char in enumerate(class_body[build_start:], build_start):
+            if char == '\\' and i + 1 < len(class_body):
+                continue
+            if char == "'" and not in_double_quote and not in_template:
+                in_single_quote = not in_single_quote
+            elif char == '"' and not in_single_quote and not in_template:
+                in_double_quote = not in_double_quote
+            elif char == '`' and not in_single_quote and not in_double_quote:
+                in_template = not in_template
+            elif not in_single_quote and not in_double_quote and not in_template:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        build_end = i
+                        break
         
-        build_body = content[build_start:build_end]
+        build_body = class_body[build_start:build_end]
         
         # 需要排除的内置组件
         builtin_components = {
@@ -1292,17 +1408,24 @@ class TypeScriptRegexParser:
         from core.entity_models import ClassEntity, MethodEntity
         logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 开始解析引用, 当前实体总数=%d", len(self.knowledge_graph.entities))
         
-        # 构建符号表
+        # 构建符号表（同名类使用列表存储，避免覆盖）
         class_by_name = {}
         method_by_key = {}
-        
+
         for entity in self.knowledge_graph.entities.values():
             if isinstance(entity, ClassEntity):
-                class_by_name[entity.name] = entity
+                class_by_name.setdefault(entity.name, []).append(entity)
             elif isinstance(entity, MethodEntity):
                 cls_name = entity.metadata.get('class_name', '')
                 method_by_key[(cls_name, entity.name)] = entity
-        
+
+        def _find_best_class_match(candidates, caller_file_path):
+            """优先匹配同文件的类，其次返回第一个"""
+            for c in candidates:
+                if c.location and c.location.file_path == caller_file_path:
+                    return c
+            return candidates[0] if candidates else None
+
         logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 符号表构建完成, 类数量=%d, 方法数量=%d",
                      len(class_by_name), len(method_by_key))
         
@@ -1321,14 +1444,17 @@ class TypeScriptRegexParser:
                     
                     # 在符号表中查找目标类
                     if target_obj in class_by_name:
-                        callee_class_id = class_by_name[target_obj].id
-                        # 在该类中查找目标方法
-                        method_key = (target_obj, target_method)
-                        if method_key in method_by_key:
-                            callee_method_id = method_by_key[method_key].id
-                        logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 解析调用: %s.%s -> %s.%s (callee_class_id=%s, callee_method_id=%s)",
-                                     entity.metadata.get('class_name', '?'), entity.name, target_obj, target_method,
-                                     callee_class_id, callee_method_id)
+                        caller_file_path = entity.location.file_path if entity.location else ''
+                        matched_class = _find_best_class_match(class_by_name[target_obj], caller_file_path)
+                        if matched_class:
+                            callee_class_id = matched_class.id
+                            # 在该类中查找目标方法
+                            method_key = (target_obj, target_method)
+                            if method_key in method_by_key:
+                                callee_method_id = method_by_key[method_key].id
+                            logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 解析调用: %s.%s -> %s.%s (callee_class_id=%s, callee_method_id=%s)",
+                                         entity.metadata.get('class_name', '?'), entity.name, target_obj, target_method,
+                                         callee_class_id, callee_method_id)
                     else:
                         logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 未解析调用目标: %s.%s -> %s (目标类 %s 未找到)",
                                      entity.metadata.get('class_name', '?'), entity.name, target_method, target_obj)
@@ -1350,9 +1476,23 @@ class TypeScriptRegexParser:
             for comp in self.knowledge_graph.metadata['components']:
                 child_name = comp.get('child_name', '')
                 if child_name in class_by_name:
-                    comp['child_class_id'] = class_by_name[child_name].id
-                    logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 解析组件引用: %s -> %s (child_class_id=%s)",
-                                 comp.get('parent_class_name'), child_name, comp['child_class_id'])
+                    parent_class_id = comp.get('parent_class_id', '')
+                    # 查找父类所在文件路径，优先匹配同文件的子类
+                    parent_file_path = ''
+                    for candidates in class_by_name.values():
+                        for c in candidates:
+                            if c.id == parent_class_id and c.location:
+                                parent_file_path = c.location.file_path
+                                break
+                        if parent_file_path:
+                            break
+                    matched_class = _find_best_class_match(class_by_name[child_name], parent_file_path)
+                    if matched_class:
+                        comp['child_class_id'] = matched_class.id
+                        logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 解析组件引用: %s -> %s (child_class_id=%s)",
+                                     comp.get('parent_class_name'), child_name, comp['child_class_id'])
+                    else:
+                        logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 未解析组件引用: %s (匹配失败)", child_name)
                 else:
                     logger.debug("[DEBUG] [TypeScriptRegexParser] [_resolve_references] 未解析组件引用: %s (目标类未找到)", child_name)
         

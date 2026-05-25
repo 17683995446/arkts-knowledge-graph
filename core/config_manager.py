@@ -30,6 +30,7 @@ class LLMConfig:
     model: str = "Qwen/Qwen2.5-7B-Instruct"
     timeout_seconds: int = 60
     max_retries: int = 3
+    max_tokens: int = 4096
 
 
 @dataclass
@@ -37,7 +38,7 @@ class WebServerConfig:
     """Web server configuration settings."""
     host: str = "0.0.0.0"
     port: int = 5000
-    debug: bool = True
+    debug: bool = False
     secret_key: str = field(default_factory=lambda: os.urandom(24).hex())
 
 
@@ -47,7 +48,8 @@ class FileWatcherConfig:
     delay_seconds: float = 2.0
     patterns: list = field(default_factory=lambda: ["*.ets", "*.ts"])
     ignore_patterns: list = field(default_factory=lambda: [
-        "node_modules/*", ".git/*", "build/*", "dist/*"
+        "node_modules/*", ".git/*", "build/*", "dist/*",
+        "oh_modules/*", ".ohpm/*", ".preview/*"
     ])
 
 
@@ -103,7 +105,8 @@ class ConfigurationManager:
             base_url=os.getenv('SILICON_FLOW_BASE_URL', 'https://api.siliconflow.cn/v1'),
             model=os.getenv('SILICON_FLOW_MODEL', 'Qwen/Qwen2.5-7B-Instruct'),
             timeout_seconds=int(os.getenv('LLM_TIMEOUT_SECONDS', '60')),
-            max_retries=int(os.getenv('LLM_MAX_RETRIES', '3'))
+            max_retries=int(os.getenv('LLM_MAX_RETRIES', '3')),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', '4096'))
         )
     
     def _load_web_server_config(self) -> WebServerConfig:
@@ -111,7 +114,7 @@ class ConfigurationManager:
         return WebServerConfig(
             host=os.getenv('FLASK_HOST', '0.0.0.0'),
             port=int(os.getenv('FLASK_PORT', '5000')),
-            debug=os.getenv('FLASK_DEBUG', 'true').lower() == 'true',
+            debug=os.getenv('FLASK_DEBUG', 'false').lower() == 'true',
             secret_key=os.getenv('FLASK_SECRET_KEY', os.urandom(24).hex())
         )
     

@@ -500,6 +500,14 @@ sequenceDiagram
     </main>
 
     <script>
+        // HTML escape utility to prevent XSS
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            const div = document.createElement('div');
+            div.textContent = String(str);
+            return div.innerHTML;
+        }
+
         // Initialize Mermaid
         mermaid.initialize({
             startOnLoad: true,
@@ -690,18 +698,18 @@ sequenceDiagram
                 <div class="space-y-4">
                     <div>
                         <p class="text-xs text-slate-500 mb-1">名称</p>
-                        <p class="text-sm font-medium text-white">${node.label}</p>
+                        <p class="text-sm font-medium text-white">${escapeHtml(node.label)}</p>
                     </div>
                     <div>
                         <p class="text-xs text-slate-500 mb-1">类型</p>
                         <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium ${getTypeBadgeClass(node.type)}">
-                            ${node.type}
+                            ${escapeHtml(node.type)}
                         </span>
                     </div>
                     ${node.path ? `
                     <div>
                         <p class="text-xs text-slate-500 mb-1">路径</p>
-                        <p class="text-sm text-slate-300 font-mono break-all">${node.path}</p>
+                        <p class="text-sm text-slate-300 font-mono break-all">${escapeHtml(node.path)}</p>
                     </div>
                     ` : ''}
                 </div>
@@ -777,7 +785,7 @@ sequenceDiagram
                     document.getElementById('results-table-container').innerHTML = `
                         <div class="p-6 text-center text-red-400">
                             <i class="fas fa-exclamation-circle mr-2"></i>
-                            ${data.error}
+                            ${escapeHtml(data.error)}
                         </div>
                     `;
                 }
@@ -787,7 +795,7 @@ sequenceDiagram
                 document.getElementById('results-table-container').innerHTML = `
                     <div class="p-6 text-center text-red-400">
                         <i class="fas fa-exclamation-circle mr-2"></i>
-                        ${error.message}
+                        ${escapeHtml(error.message)}
                     </div>
                 `;
             }
@@ -813,7 +821,7 @@ sequenceDiagram
                 <table class="w-full text-sm text-left">
                     <thead class="text-xs text-slate-400 uppercase bg-slate-700/50">
                         <tr>
-                            ${columns.map(col => `<th class="px-6 py-3">${col}</th>`).join('')}
+                            ${columns.map(col => `<th class="px-6 py-3">${escapeHtml(col)}</th>`).join('')}
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-700">
@@ -825,7 +833,7 @@ sequenceDiagram
                     const value = row[col];
                     const displayValue = value === null ? '<span class="text-slate-600">NULL</span>' : 
                                         typeof value === 'boolean' ? (value ? '✓' : '✗') :
-                                        String(value);
+                                        escapeHtml(String(value));
                     html += `<td class="px-6 py-4 text-slate-300">${displayValue}</td>`;
                 });
                 html += '</tr>';

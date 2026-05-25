@@ -71,7 +71,9 @@ class KnowledgeGraphServer:
             self.llm_client = SiliconFlowClient(
                 api_key=config.llm.api_key,
                 base_url=config.llm.base_url,
-                model=config.llm.model
+                model=config.llm.model,
+                timeout_seconds=config.llm.timeout_seconds,
+                max_retries=config.llm.max_retries
             )
             self.query_engine = QueryEngine(
                 llm_client=self.llm_client,
@@ -102,9 +104,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_stats] 统计请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/files')
@@ -113,6 +116,9 @@ class KnowledgeGraphServer:
             logger.debug("[DEBUG] [KnowledgeGraphServer] [get_files] 收到文件列表请求")
             try:
                 files = self.repository.get_all_files()
+                # 过滤掉 absolute_path 字段，避免泄露服务器路径
+                for f in files:
+                    f.pop('absolute_path', None)
                 logger.debug("[DEBUG] [KnowledgeGraphServer] [get_files] 返回 %d 个文件", len(files))
                 return jsonify({
                     'success': True,
@@ -120,9 +126,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_files] 文件列表请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/classes')
@@ -131,6 +138,9 @@ class KnowledgeGraphServer:
             logger.debug("[DEBUG] [KnowledgeGraphServer] [get_classes] 收到类列表请求")
             try:
                 classes = self.repository.get_all_classes()
+                # 过滤掉 absolute_path 字段，避免泄露服务器路径
+                for c in classes:
+                    c.pop('absolute_path', None)
                 logger.debug("[DEBUG] [KnowledgeGraphServer] [get_classes] 返回 %d 个类", len(classes))
                 return jsonify({
                     'success': True,
@@ -138,9 +148,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_classes] 类列表请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/components')
@@ -156,9 +167,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_components] 组件列表请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/classes/<class_id>/methods')
@@ -174,9 +186,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_class_methods] 类方法请求失败: class_id=%s, 错误: %s", class_id, e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/classes/<class_id>/children')
@@ -192,9 +205,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_component_children] 子组件请求失败: class_id=%s, 错误: %s", class_id, e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/graph')
@@ -202,15 +216,27 @@ class KnowledgeGraphServer:
             """Get knowledge graph data for visualization."""
             logger.debug("[DEBUG] [KnowledgeGraphServer] [get_graph_data] 收到图谱数据请求")
             try:
-                # Get all entities
-                files = self.repository.get_all_files()
-                classes = self.repository.get_all_classes()
+                limit = request.args.get('limit', 500, type=int)
+                limit = min(limit, 5000)  # Cap at 5000
+
+                # Get entities with limit
+                files_result = self.repository.execute_sql(
+                    'SELECT * FROM files ORDER BY relative_path LIMIT ?',
+                    (limit,)
+                )
+                files = files_result.get('results', [])
+
+                classes_result = self.repository.execute_sql(
+                    'SELECT * FROM classes ORDER BY name LIMIT ?',
+                    (limit,)
+                )
+                classes = classes_result.get('results', [])
                 logger.debug("[DEBUG] [KnowledgeGraphServer] [get_graph_data] 获取到 %d 个文件, %d 个类", len(files), len(classes))
-                
+
                 # Build nodes
                 nodes = []
                 edges = []
-                
+
                 # Add file nodes
                 for file in files:
                     nodes.append({
@@ -219,13 +245,13 @@ class KnowledgeGraphServer:
                         'type': 'file',
                         'path': file['relative_path']
                     })
-                
+
                 # Add class nodes and file-class edges
                 for cls in classes:
                     node_type = 'component' if cls['is_component'] else 'class'
                     if cls['is_entry']:
                         node_type = 'entry'
-                    
+
                     nodes.append({
                         'id': cls['id'],
                         'label': cls['name'],
@@ -233,17 +259,18 @@ class KnowledgeGraphServer:
                         'is_component': cls['is_component'],
                         'is_entry': cls['is_entry']
                     })
-                    
+
                     # Edge from file to class
                     edges.append({
                         'from': cls['file_id'],
                         'to': cls['id'],
                         'label': 'contains'
                     })
-                
+
                 # Add inheritance edges
                 inheritance = self.repository.execute_sql(
-                    'SELECT child_class_id, parent_class_id, parent_name, relation_type FROM inheritance'
+                    'SELECT child_class_id, parent_class_id, parent_name, relation_type FROM inheritance LIMIT ?',
+                    (limit,)
                 )
                 for inh in inheritance.get('results', []):
                     if inh['parent_class_id']:
@@ -253,10 +280,11 @@ class KnowledgeGraphServer:
                             'label': inh['relation_type'],
                             'type': 'inheritance'
                         })
-                
+
                 # Add component nesting edges
                 components = self.repository.execute_sql(
-                    'SELECT parent_class_id, child_class_id, child_name FROM components'
+                    'SELECT parent_class_id, child_class_id, child_name FROM components LIMIT ?',
+                    (limit,)
                 )
                 for comp in components.get('results', []):
                     edges.append({
@@ -265,11 +293,12 @@ class KnowledgeGraphServer:
                         'label': 'uses',
                         'type': 'component'
                     })
-                
+
                 # Add method call edges (limit to avoid clutter)
                 calls = self.repository.execute_sql(
                     'SELECT caller_class_id, callee_class_id, callee_name FROM calls '
-                    'GROUP BY caller_class_id, callee_class_id'
+                    'GROUP BY caller_class_id, callee_class_id LIMIT ?',
+                    (limit,)
                 )
                 for call in calls.get('results', []):
                     if call['callee_class_id']:
@@ -279,20 +308,37 @@ class KnowledgeGraphServer:
                             'label': 'calls',
                             'type': 'call'
                         })
-                
+
+                # Check if any result set hit the limit (may indicate truncation)
+                truncated = (
+                    len(files) >= limit
+                    or len(classes) >= limit
+                    or len(inheritance.get('results', [])) >= limit
+                    or len(components.get('results', [])) >= limit
+                    or len(calls.get('results', [])) >= limit
+                )
+
+                response_data = {
+                    'nodes': nodes,
+                    'edges': edges
+                }
+                if truncated:
+                    response_data['warning'] = (
+                        f'Results may be truncated (limit={limit}). '
+                        'Increase the limit parameter to load more data.'
+                    )
+
+                logger.debug("[DEBUG] [KnowledgeGraphServer] [get_graph_data] 返回图谱数据: %d 个节点, %d 条边", len(nodes), len(edges))
                 return jsonify({
                     'success': True,
-                    'data': {
-                        'nodes': nodes,
-                        'edges': edges
-                    }
+                    'data': response_data
                 })
-                logger.debug("[DEBUG] [KnowledgeGraphServer] [get_graph_data] 返回图谱数据: %d 个节点, %d 条边", len(nodes), len(edges))
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_graph_data] 图谱数据请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/query', methods=['POST'])
@@ -300,7 +346,7 @@ class KnowledgeGraphServer:
             """Execute natural language query."""
             logger.debug("[DEBUG] [KnowledgeGraphServer] [query] 收到自然语言查询请求")
             if not self.query_engine:
-                logger.warn("[DEBUG] [KnowledgeGraphServer] [query] LLM未配置, 返回503")
+                logger.warning("[DEBUG] [KnowledgeGraphServer] [query] LLM未配置, 返回503")
                 return jsonify({
                     'success': False,
                     'error': 'LLM not configured'
@@ -324,11 +370,11 @@ class KnowledgeGraphServer:
                         'error': 'Question is required and must be a non-empty string'
                     }), 400
 
-                if len(question) > 2000:
+                if len(question) > 500:
                     logger.debug("[DEBUG] [KnowledgeGraphServer] [query] 问题过长: %d 字符", len(question))
                     return jsonify({
                         'success': False,
-                        'error': 'Question is too long (maximum 2000 characters)'
+                        'error': 'Question must be between 1 and 500 characters'
                     }), 400
                 
                 logger.debug("[DEBUG] [KnowledgeGraphServer] [query] 执行查询: %s", question[:100])
@@ -341,9 +387,10 @@ class KnowledgeGraphServer:
                 return jsonify(result)
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [query] 查询失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/schema')
@@ -358,9 +405,10 @@ class KnowledgeGraphServer:
                 })
             except Exception as e:
                 logger.error("[DEBUG] [KnowledgeGraphServer] [get_schema] schema请求失败: %s", e)
+                error_msg = str(e) if config.web_server.debug else 'Internal server error'
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 }), 500
         
         @self.app.route('/api/config')
@@ -412,10 +460,16 @@ class KnowledgeGraphServer:
     def _on_file_change(self, event: FileChangeEvent) -> None:
         """Handle file change events."""
         logger.debug("[DEBUG] [KnowledgeGraphServer] [_on_file_change] 广播文件变更: type=%s, path=%s", event.event_type, event.file_path)
+        # 将绝对路径转换为相对路径后再广播
+        project_path = config.ark_analyzer.target_project_path or ''
+        if project_path and event.file_path.startswith(str(project_path)):
+            relative_path = event.file_path[len(str(project_path)):].lstrip('/\\')
+        else:
+            relative_path = event.file_path
         # Broadcast to all connected clients
         self.socketio.emit('file_changed', {
             'event_type': event.event_type,
-            'file_path': event.file_path,
+            'file_path': relative_path,
             'timestamp': event.timestamp.isoformat()
         })
     
@@ -429,7 +483,8 @@ class KnowledgeGraphServer:
         self.file_watcher = FileWatcher(
             project_path=config.ark_analyzer.target_project_path,
             patterns=config.file_watcher.patterns,
-            debounce_seconds=config.file_watcher.delay_seconds
+            debounce_seconds=config.file_watcher.delay_seconds,
+            ignore_patterns=config.file_watcher.ignore_patterns
         )
         self.file_watcher.add_change_callback(self._on_file_change)
         self.file_watcher.start()
