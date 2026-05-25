@@ -41,7 +41,7 @@ class CallExtractor:
         # 直接函数调用()
         "direct_call": re.compile(r'\b(\w+)\s*\(', re.MULTILINE),
         # new ClassName()
-        "new_call": re.compile(r'\bnew\s+(\w+)\s*\(', re.MULTILINE),
+        "new_call": re.compile(r'\bnew\s+(\w+)(?:\s*<[^>]*>)?\s*\(', re.MULTILINE),
         # callback: .then(() => {}), .catch(), .subscribe()
         "callback": re.compile(r'\.(then|catch|finally|subscribe|onSuccess|onError|onComplete)\s*\(', re.MULTILINE),
         # event handler: onClick, onChange 等
@@ -153,44 +153,111 @@ class CallExtractor:
 
         return calls
 
+    def _strip_comments_and_strings(self, text: str) -> str:
+        """移除注释和字符串内容，保留行号结构"""
+        result = []
+        i = 0
+        in_string = None  # None, '"', "'", '`'
+        while i < len(text):
+            ch = text[i]
+
+            # 字符串字面量
+            if ch in ('"', "'", '`') and in_string is None:
+                in_string = ch
+                result.append(' ')  # 保留位置
+                i += 1
+                continue
+
+            if in_string:
+                if ch == '\\':
+                    result.append('  ')  # 跳过转义字符
+                    i += 2
+                    continue
+                if ch == in_string:
+                    in_string = None
+                    result.append(' ')
+                    i += 1
+                    continue
+                result.append(' ')
+                i += 1
+                continue
+
+            # 单行注释
+            if ch == '/' and i + 1 < len(text) and text[i + 1] == '/':
+                while i < len(text) and text[i] != '\n':
+                    result.append(' ')
+                    i += 1
+                continue
+
+            # 多行注释
+            if ch == '/' and i + 1 < len(text) and text[i + 1] == '*':
+                while i < len(text):
+                    if text[i] == '*' and i + 1 < len(text) and text[i + 1] == '/':
+                        result.append('  ')
+                        i += 2
+                        break
+                    if text[i] == '\n':
+                        result.append('\n')  # 保留换行
+                    else:
+                        result.append(' ')
+                    i += 1
+                continue
+
+            result.append(ch)
+            i += 1
+
+        return ''.join(result)
+
     def _extract_callees_from_text(self, text: str, base_line: int) -> List[Dict]:
         """从文本中提取被调用函数"""
         callees = []
         seen = set()
 
+        # BUG-PARSE-004修复：移除注释和字符串避免假阳性
+        clean_text = self._strip_comments_and_strings(text)
+
         # this.method() 模式
-        for match in self.PATTERNS["this_method"].finditer(text):
+        for match in self.PATTERNS["this_method"].finditer(clean_text):
             name = match.group(1)
             if name not in self.EXCLUDED_KEYWORDS and name not in seen:
-                line = text[:match.start()].count('\n') + base_line
+                line = clean_text[:match.start()].count('\n') + base_line
                 callees.append({"name": name, "object": "this", "line": line, "type": 1})
                 seen.add(name)
 
         # object.method() 模式
-        for match in self.PATTERNS["object_method"].finditer(text):
+        for match in self.PATTERNS["object_method"].finditer(clean_text):
             obj = match.group(1)
             name = match.group(2)
             if (obj != "this" and name not in self.EXCLUDED_KEYWORDS
                     and f"{obj}.{name}" not in seen):
-                line = text[:match.start()].count('\n') + base_line
+                line = clean_text[:match.start()].count('\n') + base_line
                 callees.append({"name": name, "object": obj, "line": line, "type": 1})
                 seen.add(f"{obj}.{name}")
 
         # 直接函数调用
-        for match in self.PATTERNS["direct_call"].finditer(text):
+        for match in self.PATTERNS["direct_call"].finditer(clean_text):
             name = match.group(1)
             if (name not in self.EXCLUDED_KEYWORDS and name not in seen
                     and not name[0].isupper()):  # 排除大写开头（可能是类名）
-                line = text[:match.start()].count('\n') + base_line
+                line = clean_text[:match.start()].count('\n') + base_line
                 callees.append({"name": name, "object": "", "line": line, "type": 0})
                 seen.add(name)
 
         # new ClassName()
-        for match in self.PATTERNS["new_call"].finditer(text):
+        for match in self.PATTERNS["new_call"].finditer(clean_text):
             name = match.group(1)
             if name not in seen:
-                line = text[:match.start()].count('\n') + base_line
+                line = clean_text[:match.start()].count('\n') + base_line
                 callees.append({"name": name, "object": "", "line": line, "type": 0})
+                seen.add(name)
+
+        # BUG-PARSE-007修复：callback模式: .then(), .catch(), .finally(), .subscribe() 等
+        CALLBACK_ALLOWED = {"catch", "finally"}  # 这些在callback上下文中是有效的
+        for match in self.PATTERNS["callback"].finditer(clean_text):
+            name = match.group(1)
+            if (name not in self.EXCLUDED_KEYWORDS or name in CALLBACK_ALLOWED) and name not in seen:
+                line = clean_text[:match.start()].count('\n') + base_line
+                callees.append({"name": name, "object": "", "line": line, "type": 2})
                 seen.add(name)
 
         return callees

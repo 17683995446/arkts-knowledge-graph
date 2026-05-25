@@ -92,6 +92,15 @@ class ArkTSParser:
         """检查当前Token是否是标识符"""
         return self._current().type == TokenType.IDENTIFIER
 
+    def _is_type_name(self) -> bool:
+        """检查当前Token是否可以作为类型名（标识符或可用作模块名的关键字）"""
+        if self._current().type == TokenType.IDENTIFIER:
+            return True
+        # 某些关键字在类型路径中可用作模块名，如 module.IInterface
+        if self._current().type == TokenType.KEYWORD and self._current().value in ('module', 'namespace', 'type'):
+            return True
+        return False
+
     def _is_punctuation(self, ch: str) -> bool:
         """检查当前Token是否是指定标点"""
         tok = self._current()
@@ -371,7 +380,7 @@ class ArkTSParser:
         extends_list = []
         if self._is_keyword("extends"):
             self._advance()
-            while self._is_identifier():
+            while self._is_type_name():
                 # BUG-M1修复：拼接点号路径，如 a.b.c.Base
                 full_name = self._current().value
                 self._advance()
@@ -409,8 +418,8 @@ class ArkTSParser:
         implements_list = []
         if self._is_keyword("implements"):
             self._advance()
-            while self._is_identifier():
-                # 拼接点号路径，如 a.b.c.Interface
+            while self._is_type_name():
+                # BUG-PARSE-006修复：拼接点号路径（与extends一致）
                 full_name = self._current().value
                 self._advance()
                 while self._is_punctuation('.'):
@@ -971,14 +980,41 @@ class ArkTSParser:
             name = self._current().value
             self._advance()
 
-        _, end_line = self._skip_block()
-
-        return NamespaceNode(
+        namespace_node = NamespaceNode(
             node_type="NamespaceDeclaration",
             name=name,
             start_line=start_tok.line,
-            end_line=end_line,
+            end_line=start_tok.line,
         )
+
+        # BUG-PARSE-001修复：解析命名空间内容而非跳过
+        if self._is_punctuation('{'):
+            self._advance()
+            while not self._is_punctuation('}') and self._current().type != TokenType.EOF:
+                self._skip_semicolons()
+                if self._is_punctuation('}') or self._current().type == TokenType.EOF:
+                    break
+
+                # 解析装饰器
+                ns_decorators = self._parse_decorators()
+
+                # 解析导出
+                ns_is_exported = False
+                if self._is_keyword("export"):
+                    self._advance()
+                    ns_is_exported = True
+
+                # 解析各种声明
+                node = self._parse_declaration(ns_decorators, ns_is_exported)
+                if node:
+                    namespace_node.add_child(node)
+            self._expect_punctuation('}')
+            namespace_node.end_line = self._current().line
+        else:
+            _, end_line = self._skip_block()
+            namespace_node.end_line = end_line
+
+        return namespace_node
 
     def _parse_enum_declaration(self, decorators, is_exported) -> ClassNode:
         """解析枚举声明"""

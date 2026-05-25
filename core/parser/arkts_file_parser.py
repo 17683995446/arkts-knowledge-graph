@@ -112,9 +112,14 @@ class ArkTSFileParser:
         return hashlib.sha256(content.encode('utf-8')).digest()
 
     def _extract_classes(self, file_node: FileNode, file_path: str) -> List[Dict]:
-        """提取所有类/接口/枚举"""
+        """提取所有类/接口/枚举（包括命名空间内的）"""
         classes = []
-        for child in file_node.children:
+        self._collect_classes(file_node, file_path, classes)
+        return classes
+
+    def _collect_classes(self, node: ASTNode, file_path: str, classes: List[Dict]):
+        """递归收集类/接口/枚举"""
+        for child in node.children:
             if isinstance(child, ClassNode):
                 flags = 0
                 if child.is_interface:
@@ -141,7 +146,11 @@ class ArkTSFileParser:
                     "extends": child.extends,
                     "implements": child.implements,
                 })
-        return classes
+                # 递归进入类的子节点（如嵌套类）
+                self._collect_classes(child, file_path, classes)
+            else:
+                # 递归进入非类节点（如命名空间）查找类
+                self._collect_classes(child, file_path, classes)
 
     def _extract_methods(self, file_node: FileNode, file_path: str) -> List[Dict]:
         """提取所有方法/函数"""
