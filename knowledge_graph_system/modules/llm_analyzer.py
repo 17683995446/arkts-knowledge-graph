@@ -18,7 +18,7 @@ import json
 import time
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
@@ -38,8 +38,8 @@ class LLMConfig:
 @dataclass
 class AnalysisResult:
     """分析结果"""
-    summary: str
-    tags: List[str]
+    summary: str = ""
+    tags: List[str] = field(default_factory=list)
     confidence: float = 0.0
 
 
@@ -180,6 +180,10 @@ class LLMAnalyzer:
     
     def _parse_response(self, content: str) -> AnalysisResult:
         """解析LLM响应"""
+        # 修复 BUG-75/77: None/空/纯空白返回confidence=0.0
+        if not content or not content.strip():
+            return AnalysisResult()
+
         try:
             # 尝试解析JSON格式
             if '{' in content and '}' in content:
@@ -187,6 +191,10 @@ class LLMAnalyzer:
                 json_end = content.rfind('}') + 1
                 json_str = content[json_start:json_end]
                 data = json.loads(json_str)
+                
+                # 修复 BUG-78: data可能不是dict（如list）
+                if not isinstance(data, dict):
+                    return AnalysisResult()
                 
                 summary = data.get('summary', data.get('description', content[:200]))
                 tags = data.get('tags', data.get('keywords', []))
@@ -202,32 +210,8 @@ class LLMAnalyzer:
         except json.JSONDecodeError:
             pass
         
-        # 回退：简单解析文本
-        lines = content.strip().split('\n')
-        summary = lines[0][:200] if lines else ""
-        
-        # 修复 BUG-28: 空内容应返回低confidence
-        if not summary or not summary.strip():
-            return AnalysisResult(summary="", tags=[], confidence=0.0)
-
-        # 从内容中提取标签
-        tags = []
-        for line in lines:
-            if '标签' in line or 'tags' in line.lower() or 'keywords' in line.lower():
-                parts = line.split(':')[-1] if ':' in line else line
-                tags = [t.strip() for t in parts.split(',') if t.strip()]
-                break
-        
-        if not tags:
-            # 从总结中提取关键词作为标签
-            words = summary.split()
-            tags = [w for w in words if len(w) > 2][:3]
-        
-        return AnalysisResult(
-            summary=summary,
-            tags=tags[:5],
-            confidence=0.7
-        )
+        # 修复 BUG-76: 不完整JSON/非JSON文本返回confidence=0.0
+        return AnalysisResult()
     
     def analyze_entity(self, code_snippet: str, entity_name: str = "", 
                        entity_type: str = "") -> AnalysisResult:

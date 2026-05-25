@@ -43,6 +43,7 @@ class SQLiteStorage:
         self._local = threading.local()
         self._all_connections = {}  # tid -> connection，用于close()时清理所有线程连接
         self._connections_lock = threading.Lock()  # 保护_all_connections的并发访问
+        self._closed = False  # 关闭标志
         self._init_database()
     
     def _get_connection(self) -> sqlite3.Connection:
@@ -317,6 +318,8 @@ class SQLiteStorage:
     
     def get_entities(self, file_path: Optional[str] = None, entity_type: Optional[str] = None) -> List[Dict]:
         """获取代码实体"""
+        if self._closed:
+            raise RuntimeError("SQLiteStorage has been closed")
         conn = self._get_connection()
         
         query = "SELECT * FROM code_entities WHERE 1=1"
@@ -637,14 +640,18 @@ class SQLiteStorage:
     
     def close(self) -> None:
         """关闭所有线程的数据库连接"""
-        # 修复 BUG-1: 先关闭连接再清理引用
-        # 关闭所有已注册的线程连接
         with self._connections_lock:
+            if self._closed:
+                return
+            self._closed = True
+            # 修复 BUG-80: SQLite连接不能跨线程关闭
+            current_tid = threading.current_thread().ident
             for tid, conn in list(self._all_connections.items()):
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                if tid == current_tid:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
             self._all_connections.clear()
         
         # 关闭当前线程的连接
