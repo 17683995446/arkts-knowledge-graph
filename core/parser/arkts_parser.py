@@ -758,11 +758,16 @@ class ArkTSParser:
                    not self._is_punctuation(';') and
                    # 修复P: 遇到 } 时停止类型注解
                    not self._is_punctuation('}') and
-                   not (depth == 0 and self._current().type == TokenType.KEYWORD and 
+                   not (depth == 0 and self._current().type == TokenType.KEYWORD and
                         self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly')) and
                    # 修复：depth==0时遇到换行后的标识符停止（无分号属性声明）
                    not (depth == 0 and self._current().type == TokenType.IDENTIFIER and
-                        type_parts and self._current().line > start_line)):
+                        type_parts and self._current().line > start_line) and
+                   # BUG-107修复：depth==0时遇到标识符+(停止（方法声明，同一行）
+                   not (depth == 0 and self._current().type == TokenType.IDENTIFIER and
+                        type_parts and
+                        self._pos + 1 < len(self._tokens) and self._tokens[self._pos + 1].type == TokenType.PUNCTUATION and
+                        self._tokens[self._pos + 1].value == '(')):
                 # BUG-37修复：深度计数处理泛型
                 if self._is_punctuation('<') or (self._current().type == TokenType.OPERATOR and self._current().value == '<'):
                     depth += 1
@@ -781,7 +786,8 @@ class ArkTSParser:
             depth = 0
             # 读取默认值，遇到 ; 或换行后的关键字停止
             while (self._current().type != TokenType.EOF and
-                   not (self._is_punctuation(';') and depth == 0)):
+                   not (self._is_punctuation(';') and depth == 0) and
+                   not (self._is_punctuation('}') and depth == 0)):
                 # 检查是否遇到下一个成员的关键字
                 if (depth == 0 and self._current().type == TokenType.KEYWORD and
                     self._current().value in ('static', 'private', 'public', 'protected', 'async', 'readonly', 'constructor', 'get', 'set',
@@ -789,14 +795,14 @@ class ArkTSParser:
                                               'import', 'abstract')):
                     break
                 # BUG-37修复：depth==0时遇到标识符+括号(方法声明)也停止
-                # BUG-H4修复：在赋值上下文中不因identifier+(停止（避免截断函数调用默认值getName()）
-                # 仅在非赋值上下文(val_parts为空且不在=后面)时停止
-                if (depth == 0 and len(val_parts) == 0 and
+                # BUG-107修复：移除val_parts为空的限制，避免默认值后方法被跳过
+                # 当IDENTIFIER后跟()且再跟:或)时，一定是方法声明
+                if (depth == 0 and
                     self._current().type == TokenType.IDENTIFIER and
                     self._pos + 1 < len(self._tokens) and self._tokens[self._pos + 1].type == TokenType.PUNCTUATION and
                     self._tokens[self._pos + 1].value == '(' and
                     self._pos + 2 < len(self._tokens) and self._tokens[self._pos + 2].type == TokenType.PUNCTUATION and
-                    self._tokens[self._pos + 2].value in (':', ',')):
+                    self._tokens[self._pos + 2].value in (':', ')', '{')):
                     break
                 if self._is_punctuation('{') or self._is_punctuation('(') or self._is_punctuation('['):
                     depth += 1
